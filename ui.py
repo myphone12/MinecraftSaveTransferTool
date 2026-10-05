@@ -20,8 +20,22 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import player_api
-from nbt_ops import UUID_RE, uuid_dashed
-from operations import MigrateUuidOp, OperationManager, SetHostOp
+from nbt_ops import (
+    UUID_RE,
+    read_player_fields,
+    read_world_settings,
+    uuid_dashed,
+)
+from operations import (
+    DIFFICULTY_NAMES,
+    GAMEMODE_NAMES,
+    EditPlayerOp,
+    MigrateUuidOp,
+    OperationManager,
+    SetHostOp,
+    SetWorldOp,
+)
+from player_dialog import PlayerEditDialog
 from save_manager import (
     ALL_PARTS,
     PART_ADVANCEMENTS,
@@ -73,13 +87,14 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("Minecraft 存档玩家数据迁移工具")
-        root.geometry("1000x780")
-        root.minsize(880, 640)
+        root.geometry("1320x880")
+        root.minsize(1150, 680)
 
         self.sm = SaveManager()
         self.om = OperationManager(self.sm)
         self._fetch_pool = None          # 玩家信息获取线程池
         self._avatar_cache = {}          # uuid -> PhotoImage（避免重复解码与 GC）
+        self._world_base = {}            # 存档基础参数基准值（用于对比修改）
         self.steve_img = make_steve_image()
 
         self._build_menu()
@@ -204,6 +219,60 @@ class App:
                        "点击确认后将在下方日志区列出会修改的文件。"
                   ).pack(anchor="w", padx=10, pady=(0, 8))
 
+        # ---------- 最右列：存档基础参数 ----------
+        world_col = ttk.Frame(main)
+        main.add(world_col, weight=2)
+        world_col.rowconfigure(0, weight=1)
+        world_col.columnconfigure(0, weight=1)
+
+        world_frame = ttk.LabelFrame(world_col, text="存档基础参数")
+        world_frame.grid(row=0, column=0, sticky="nsew", padx=(6, 0))
+
+        form = ttk.Frame(world_frame)
+        form.pack(fill=tk.X, padx=10, pady=(10, 4))
+
+        ttk.Label(form, text="存档名称：").grid(row=0, column=0, sticky="w",
+                                                pady=3)
+        self.world_name_var = tk.StringVar()
+        self.world_name_entry = ttk.Entry(form, textvariable=self.world_name_var)
+        self.world_name_entry.grid(row=0, column=1, sticky="ew", pady=3,
+                                   padx=(4, 0))
+
+        ttk.Label(form, text="难度：").grid(row=1, column=0, sticky="w", pady=3)
+        self.diff_combo = ttk.Combobox(
+            form, values=[DIFFICULTY_NAMES[i] for i in range(4)],
+            state="readonly", width=8)
+        self.diff_combo.grid(row=1, column=1, sticky="w", pady=3, padx=(4, 0))
+
+        ttk.Label(form, text="默认游戏模式：").grid(row=2, column=0,
+                                                    sticky="w", pady=3)
+        self.gt_combo = ttk.Combobox(
+            form, values=[GAMEMODE_NAMES[i] for i in range(4)],
+            state="readonly", width=8)
+        self.gt_combo.grid(row=2, column=1, sticky="w", pady=3, padx=(4, 0))
+
+        self.diff_locked_var = tk.BooleanVar(value=False)
+        self.diff_locked_check = ttk.Checkbutton(
+            form, text="锁定难度", variable=self.diff_locked_var)
+        self.diff_locked_check.grid(row=3, column=0, sticky="w", pady=3)
+
+        self.allow_cmd_var = tk.BooleanVar(value=True)
+        self.allow_cmd_check = ttk.Checkbutton(
+            form, text="允许命令", variable=self.allow_cmd_var)
+        self.allow_cmd_check.grid(row=3, column=1, sticky="w", pady=3,
+                                  padx=(4, 0))
+
+        form.columnconfigure(1, weight=1)
+
+        self.world_btn = ttk.Button(world_frame, text="确认",
+                                    command=self.on_set_world)
+        self.world_btn.pack(pady=8)
+        ttk.Label(world_frame, foreground="#666", wraplength=280,
+                  justify="left",
+                  text="说明：确认后仅记录与当前存档不同处的待操作，"
+                       "需在菜单中选择“保存全部修改到存档”才会写入 level.dat。"
+                  ).pack(anchor="w", padx=10, pady=(0, 8))
+
         # ---------- 底部状态栏（先于主分栏打包，确保空间不被挤占） ----------
         status = ttk.Frame(self.root)
         status.pack(fill=tk.X, side=tk.BOTTOM, padx=8, pady=4)
@@ -292,16 +361,19 @@ class App:
             return
 
         rows = self.om.display_rows()
-        host_uuid = self.om.display_host_uuid()
+        pending_host = self.om.display_host_uuid()      # 待保存的房主操作
+        detected_host = self.sm.host_uuid               # level.dat 中检测到的房主
         if not rows:
             ttk.Label(self.rows_frame, foreground="#888",
                       text="该存档的 playerdata 中没有找到玩家。").pack(padx=20, pady=20)
 
         for row in rows:
-            self._build_player_row(row, row.uuid == host_uuid)
+            self._build_player_row(row, row.uuid == pending_host,
+                                   row.uuid == detected_host)
 
-    def _build_player_row(self, row, is_host: bool):
-        """创建一行玩家显示：头像 + 名称 + UUID（+ 房主标记）。"""
+    def _build_player_row(self, row, is_pending_host: bool,
+                          is_detected_host: bool):
+        """创建一行玩家显示：头像 + 名称 + UUID（+ 房主标记），双击编辑参数。"""
         frame = ttk.Frame(self.rows_frame)
         frame.pack(fill=tk.X, padx=6, pady=3)
 
@@ -312,11 +384,25 @@ class App:
 
         text = ttk.Frame(frame)
         text.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        name = row.display_name() + ("  ★房主(待保存)" if is_host else "")
-        ttk.Label(text, text=name, font=("Microsoft YaHei UI", 10, "bold")).pack(
-            anchor="w")
-        ttk.Label(text, text=row.uuid, foreground="#666",
-                  font=("Consolas", 9)).pack(anchor="w")
+        # 房主标记：待保存的操作优先显示，其次是 level.dat 中检测到的当前房主
+        if is_pending_host:
+            marker = "  ★房主(待保存)" if not is_detected_host else "  ★房主"
+        elif is_detected_host:
+            marker = "  ★房主"
+        else:
+            marker = ""
+        name = row.display_name() + marker
+        name_label = ttk.Label(text, text=name,
+                               font=("Microsoft YaHei UI", 10, "bold"))
+        name_label.pack(anchor="w")
+        uuid_label = ttk.Label(text, text=row.uuid, foreground="#666",
+                               font=("Consolas", 9))
+        uuid_label.pack(anchor="w")
+
+        # 双击行内任意位置 → 打开玩家参数编辑弹窗
+        for w in (frame, img_label, text, name_label, uuid_label):
+            w.bind("<Double-Button-1>",
+                   lambda e, r=row: self.on_edit_player(r))
 
         ttk.Separator(self.rows_frame, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
@@ -371,15 +457,21 @@ class App:
 
         for widget in (self.host_combo, self.host_btn,
                        self.src_combo, self.dst_combo, self.mig_btn,
+                       self.world_name_entry, self.diff_locked_check,
+                       self.allow_cmd_check, self.world_btn,
                        *self.part_checks):
             widget.configure(state="normal" if loaded else "disabled")
         if loaded:
             # 恢复只读下拉的状态
             self.host_combo.configure(state="readonly")
             self.src_combo.configure(state="readonly")
+            self.diff_combo.configure(state="readonly")
+            self.gt_combo.configure(state="readonly")
         else:
             self.host_combo.configure(state="disabled")
             self.src_combo.configure(state="disabled")
+            self.diff_combo.configure(state="disabled")
+            self.gt_combo.configure(state="disabled")
 
     def _refresh_pending_label(self):
         ops = self.om.active_ops()
@@ -406,6 +498,7 @@ class App:
             self._fetch_pool.shutdown(wait=False)
         self.om.reset()
         self._avatar_cache.clear()
+        self._load_world_settings()
 
         self._set_status(f"已加载存档：{path}，共 {len(self.sm.players)} 名玩家，"
                          f"正在获取在线信息…")
@@ -458,6 +551,8 @@ class App:
                     e.name, e.online, e.avatar_png = src.name, src.online, src.avatar_png
         except ValueError:
             pass
+        # 保存后重新读取存档基础参数（房主检测也随 sm.load 更新）
+        self._load_world_settings()
         self._refresh_all()
         self._set_status("已保存全部修改到存档")
         self.log("保存全部修改到存档：完成", "title")
@@ -604,6 +699,81 @@ class App:
         self.om.add(MigrateUuidOp(src, dst, parts))
         self._set_status(f"已记录待操作：UUID 迁移 {src} → {dst}")
         self._refresh_all()
+
+    # ------------------------------------------------------------------
+    # 存档基础参数
+    # ------------------------------------------------------------------
+    def _load_world_settings(self):
+        """从 level.dat 读取存档基础参数并填充面板（记录基准值用于对比）。"""
+        try:
+            settings = read_world_settings(self.sm.save_dir)
+        except Exception as e:
+            self._world_base = {}
+            self.log(f"读取存档基础参数失败：{e}", "error")
+            return
+        self._world_base = dict(settings)
+        self.world_name_var.set(settings["LevelName"])
+        self.diff_combo.current(settings["Difficulty"])
+        self.gt_combo.current(settings["GameType"])
+        self.diff_locked_var.set(settings["DifficultyLocked"])
+        self.allow_cmd_var.set(settings["allowCommands"])
+
+    def on_set_world(self):
+        """确认存档基础参数：与基准值对比，只记录有变化的字段。"""
+        current = {
+            "LevelName": self.world_name_var.get().strip(),
+            "Difficulty": self.diff_combo.current(),
+            "GameType": self.gt_combo.current(),
+            "DifficultyLocked": bool(self.diff_locked_var.get()),
+            "allowCommands": bool(self.allow_cmd_var.get()),
+        }
+        if current["Difficulty"] < 0 or current["GameType"] < 0:
+            messagebox.showwarning("未选择", "请选择难度与默认游戏模式。")
+            return
+        if not current["LevelName"]:
+            messagebox.showwarning("名称为空", "存档名称不能为空。")
+            return
+        changed = {k: v for k, v in current.items()
+                   if self._world_base.get(k) != v}
+        if not changed:
+            messagebox.showinfo("无修改", "存档基础参数没有变化。")
+            return
+        op = SetWorldOp(changed)
+        self.log("确认修改存档基础参数", "title")
+        self.log(f"  {op.describe()}")
+        self.log("  将修改：level.dat（Data 标签）；已加入待操作列表，保存后生效")
+        self.om.add(op)
+        # 基准值更新为面板当前值，避免重复记录相同修改
+        self._world_base.update(changed)
+        self._set_status("已记录待操作：修改存档基础参数")
+        self._refresh_all()
+
+    # ------------------------------------------------------------------
+    # 玩家参数编辑（双击左侧玩家弹出）
+    # ------------------------------------------------------------------
+    def on_edit_player(self, row):
+        """打开玩家参数编辑弹窗，确认后记录 EditPlayerOp。"""
+        try:
+            fields = read_player_fields(self.sm.save_dir, row.uuid)
+        except Exception as e:
+            messagebox.showerror("读取失败",
+                                 f"无法读取玩家数据 {row.uuid}：\n{e}")
+            return
+
+        def on_confirm(uuid, changes):
+            op = EditPlayerOp(uuid, changes)
+            self.log(f"确认修改玩家参数：{row.display_name()} ({uuid})", "title")
+            self.log(f"  {op.describe()}")
+            is_host_now = (self.om.display_host_uuid() or self.sm.host_uuid) == uuid
+            target = "playerdata 文件" + ("与 level.dat（该玩家是房主）"
+                                          if is_host_now else "")
+            self.log(f"  将修改：{target}；已加入待操作列表，保存后生效")
+            self.om.add(op)
+            self._set_status(f"已记录待操作：修改玩家参数 {uuid}")
+            self._refresh_all()
+
+        PlayerEditDialog(self.root, row.uuid, row.display_name(), fields,
+                         on_confirm)
 
     def _log_file_preview(self, header, files, swap: bool):
         """在日志区按分类列出文件预览。"""
