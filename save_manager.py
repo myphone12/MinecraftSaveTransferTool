@@ -10,7 +10,7 @@
 import os
 import re
 
-from nbt_ops import UUID_RE, uuid_dashed, uuid_undashed
+from nbt_ops import UUID_RE, detect_host_uuid, uuid_dashed, uuid_undashed
 
 # 参与 UUID 迁移的文件扩展名
 UUID_FILE_EXTS = (".dat", ".nbt", ".snbt", ".json")
@@ -80,6 +80,7 @@ class SaveManager:
     def __init__(self):
         self.save_dir = None          # 存档根目录路径
         self.players = []             # list[PlayerEntry]
+        self.host_uuid = None         # 当前 level.dat 中检测到的房主 UUID
 
     # ------------------------------------------------------------------
     def load(self, save_dir: str) -> None:
@@ -94,6 +95,8 @@ class SaveManager:
 
         self.save_dir = save_dir
         self.players = []
+        # 从 level.dat 的 Data/Player/UUID 检测当前房主
+        self.host_uuid = detect_host_uuid(save_dir)
 
         playerdata_dir = os.path.join(save_dir, "playerdata")
         if os.path.isdir(playerdata_dir):

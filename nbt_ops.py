@@ -242,3 +242,155 @@ def clone_player_to_level(save_dir: str, target_uuid: str) -> None:
         player_compound[key] = tag
 
     save_nbt(level_nbt, level_path, level_compressed)
+
+
+# ---------------------------------------------------------------------------
+# 房主检测
+# ---------------------------------------------------------------------------
+
+def ints_to_uuid(ints) -> str:
+    """将 Java UUID 的 4 个有符号 int32 还原为带横杠小写 UUID。"""
+    b = b"".join((i & 0xFFFFFFFF).to_bytes(4, "big", signed=False) for i in ints)
+    return uuid_dashed(b.hex())
+
+
+def detect_host_uuid(save_dir: str):
+    """从 level.dat 的 Data/Player/UUID 标签检测当前房主玩家的 UUID。
+
+    单人存档中 level.dat 的 Player 复合标签即房主玩家数据，
+    其中的 UUID 标签（TAG_Int_Array）与 playerdata 文件名一致。
+    检测不到（标签缺失等）时返回 None。
+    """
+    try:
+        level_nbt, _ = load_nbt(os.path.join(save_dir, "level.dat"))
+        player = level_nbt["Data"]["Player"]
+        if "UUID" in player.keys():
+            return ints_to_uuid(list(player["UUID"].value))
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 存档基础参数（level.dat 的 Data 标签）
+# ---------------------------------------------------------------------------
+
+def read_world_settings(save_dir: str) -> dict:
+    """读取存档基础参数：名称、难度、锁定难度、允许命令、默认游戏模式。"""
+    level_nbt, _ = load_nbt(os.path.join(save_dir, "level.dat"))
+    data = level_nbt["Data"]
+    settings = {
+        "LevelName": str(data["LevelName"].value),
+        "Difficulty": int(data["Difficulty"].value),
+        "DifficultyLocked": bool(data["DifficultyLocked"].value),
+        "allowCommands": bool(data["allowCommands"].value),
+        "GameType": int(data["GameType"].value),
+    }
+    return settings
+
+
+def write_world_settings(save_dir: str, settings: dict) -> None:
+    """把存档基础参数写入 level.dat 的 Data 标签（只写传入的键）。"""
+    level_path = os.path.join(save_dir, "level.dat")
+    level_nbt, compressed = load_nbt(level_path)
+    data = level_nbt["Data"]
+    for key, value in settings.items():
+        if key not in data.keys():
+            raise ValueError(f"level.dat 的 Data 中缺少 {key} 标签")
+        tag = data[key]
+        # bool 需转回 byte 值（TAG_Byte 存储 0/1）
+        tag.value = int(value) if isinstance(value, bool) else value
+    save_nbt(level_nbt, level_path, compressed)
+
+
+# ---------------------------------------------------------------------------
+# 玩家参数编辑（playerdata/<uuid>.dat，房主同步 level.dat）
+# ---------------------------------------------------------------------------
+
+# 可编辑玩家字段 → 期望的 NBT 标签类型名（用于标签缺失时重建）
+PLAYER_FIELD_TYPES = {
+    "playerGameType": "int",
+    "Health": "float",
+    "foodLevel": "int",
+    "foodSaturationLevel": "float",
+    "XpLevel": "int",
+    "XpP": "float",
+    "XpTotal": "int",
+    "Score": "int",
+}
+
+
+def xp_total_for_level(level: int) -> int:
+    """按原版公式计算到达指定经验等级所需的累计经验值。
+
+    Minecraft Wiki 经验公式：
+      level <= 16:  level^2 + 6*level
+      17..31:       2.5*level^2 - 40.5*level + 360
+      level >= 32:  4.5*level^2 - 162.5*level + 2220
+    """
+    if level <= 16:
+        return level * level + 6 * level
+    if level <= 31:
+        return int(2.5 * level * level - 40.5 * level + 360)
+    return int(4.5 * level * level - 162.5 * level + 2220)
+
+
+def _set_player_field(compound, key: str, value) -> None:
+    """设置复合标签中的字段值；标签缺失时按期望类型重建。"""
+    from nbt.nbt import TAG_Float, TAG_Int
+    if key in compound.keys():
+        compound[key].value = value
+    else:
+        tag_cls = TAG_Int if PLAYER_FIELD_TYPES[key] == "int" else TAG_Float
+        compound[key] = tag_cls(name=key, value=value)
+
+
+def _apply_player_changes(compound, changes: dict) -> None:
+    """把参数字典应用到玩家 NBT 复合标签。
+
+    修改 XpLevel 时按原版公式同步重算 XpTotal/XpP/Score，
+    避免三者不一致导致游戏内经验显示异常。
+    """
+    changes = dict(changes)
+    if "XpLevel" in changes:
+        level = int(changes["XpLevel"])
+        changes.setdefault("XpTotal", xp_total_for_level(level))
+        changes.setdefault("XpP", 0.0)
+        changes.setdefault("Score", changes["XpTotal"])
+    for key, value in changes.items():
+        if key not in PLAYER_FIELD_TYPES:
+            raise ValueError(f"不支持的玩家字段：{key}")
+        _set_player_field(compound, key, value)
+
+
+def edit_player_data(save_dir: str, uuid: str, changes: dict) -> bool:
+    """修改玩家参数：写入 playerdata/<uuid>.dat。
+
+    若该玩家正是 level.dat 中记录的房主，同步修改 Data/Player 的对应标签。
+    返回是否同时修改了 level.dat。
+    """
+    uuid = uuid_dashed(uuid)
+    player_path = os.path.join(save_dir, "playerdata", uuid + ".dat")
+    player_nbt, player_compressed = load_nbt(player_path)
+    _apply_player_changes(player_nbt, changes)
+    save_nbt(player_nbt, player_path, player_compressed)
+
+    also_level = detect_host_uuid(save_dir) == uuid
+    if also_level:
+        level_path = os.path.join(save_dir, "level.dat")
+        level_nbt, level_compressed = load_nbt(level_path)
+        _apply_player_changes(level_nbt["Data"]["Player"], changes)
+        save_nbt(level_nbt, level_path, level_compressed)
+    return also_level
+
+
+def read_player_fields(save_dir: str, uuid: str) -> dict:
+    """读取玩家当前参数值（用于编辑弹窗回显）。"""
+    player_path = os.path.join(save_dir, "playerdata",
+                               uuid_dashed(uuid) + ".dat")
+    player_nbt, _ = load_nbt(player_path)
+    values = {}
+    for key in PLAYER_FIELD_TYPES:
+        if key in player_nbt.keys():
+            values[key] = player_nbt[key].value
+    return values
