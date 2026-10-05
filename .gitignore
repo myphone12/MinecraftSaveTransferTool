@@ -1,0 +1,11 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 测试存档与临时目录不入库（体积大、含二进制）
+测试存档/
+scratch/
+backups/
+
+# NBTExplorer 二进制工具（不再作为运行时依赖）
+NBTExplorer/
