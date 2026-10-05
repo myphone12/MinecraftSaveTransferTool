@@ -29,6 +29,24 @@ class PlayerEntry:
         return self.name if self.online else "离线玩家"
 
 
+def find_uuid_files(save_dir: str, uuid: str):
+    """递归搜索存档目录中文件名包含目标 UUID 的 .dat/.nbt/.snbt/.json 文件。
+
+    返回绝对路径列表。文件名匹配同时考虑带横杠与无横杠两种形式，
+    大小写不敏感。模块级函数以便对"另存为"的副本目录复用。
+    """
+    dashed = uuid_dashed(uuid)
+    undashed = uuid_undashed(uuid)
+    results = []
+    for root, _dirs, files in os.walk(save_dir):
+        for fname in files:
+            lower = fname.lower()
+            if dashed in lower or undashed in lower:
+                if lower.endswith(UUID_FILE_EXTS):
+                    results.append(os.path.join(root, fname))
+    return sorted(results)
+
+
 class SaveManager:
     """当前打开存档的管理器。"""
 
@@ -74,18 +92,5 @@ class SaveManager:
 
     # ------------------------------------------------------------------
     def find_uuid_files(self, uuid: str):
-        """递归搜索存档中文件名包含目标 UUID 的 .dat/.nbt/.snbt/.json 文件。
-
-        返回绝对路径列表。文件名匹配同时考虑带横杠与无横杠两种形式，
-        大小写不敏感。
-        """
-        dashed = uuid_dashed(uuid)
-        undashed = uuid_undashed(uuid)
-        results = []
-        for root, _dirs, files in os.walk(self.save_dir):
-            for fname in files:
-                lower = fname.lower()
-                if dashed in lower or undashed in lower:
-                    if lower.endswith(UUID_FILE_EXTS):
-                        results.append(os.path.join(root, fname))
-        return sorted(results)
+        """递归搜索存档中文件名包含目标 UUID 的文件（委托模块级函数）。"""
+        return find_uuid_files(self.save_dir, uuid)

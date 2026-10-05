@@ -82,14 +82,30 @@ def uuid_to_longs(uuid: str):
 # NBT 文件读写
 # ---------------------------------------------------------------------------
 
-def load_nbt(path: str) -> NBTFile:
-    """读取 gzip 压缩的 NBT 文件（.dat / .nbt）。"""
-    return NBTFile(filename=path)
+def load_nbt(path: str):
+    """读取 NBT 文件，自动识别 gzip 压缩与原始未压缩两种格式。
+
+    返回 (NBTFile, compressed)。原版存档的 .dat/.nbt 均为 gzip 压缩，
+    但部分模组的 .nbt 文件是未压缩的原始 NBT 流。
+    """
+    try:
+        return NBTFile(filename=path), True
+    except Exception:
+        # gzip 解析失败 → 尝试按未压缩的原始 NBT 流解析
+        with open(path, "rb") as f:
+            raw = f.read()
+        return NBTFile(buffer=io.BytesIO(raw)), False
 
 
-def save_nbt(nbt_file: NBTFile, path: str) -> None:
-    """将 NBT 树以 gzip 压缩写回文件。"""
-    nbt_file.write_file(filename=path)
+def save_nbt(nbt_file: NBTFile, path: str, compressed: bool = True) -> None:
+    """将 NBT 树写回文件，compressed 决定使用 gzip 压缩还是原始格式。"""
+    if compressed:
+        nbt_file.write_file(filename=path)
+    else:
+        buf = io.BytesIO()
+        nbt_file.write_file(buffer=buf)
+        with open(path, "wb") as f:
+            f.write(buf.getvalue())
 
 
 def deep_copy_nbt(nbt_file: NBTFile) -> NBTFile:
@@ -156,16 +172,23 @@ def _replace_in_tag(tag, old_forms, new_forms, counter):
 
 
 def replace_uuid_in_nbt_file(path: str, old_uuid: str, new_uuid: str) -> int:
-    """打开 .dat / .nbt 文件，替换树中所有目标 UUID，保存并返回替换次数。"""
+    """打开 .dat / .nbt 文件，替换树中所有目标 UUID，保存并返回替换次数。
+
+    若文件无法按 NBT 解析（例如个别模组以 SNBT 文本存放 .nbt），
+    则回退为纯文本替换，保证迁移不因单个文件格式特殊而中断。
+    """
     old_forms = (uuid_dashed(old_uuid), uuid_undashed(old_uuid),
                  uuid_to_ints(old_uuid), uuid_to_longs(old_uuid))
     new_forms = (uuid_dashed(new_uuid), uuid_undashed(new_uuid),
                  uuid_to_ints(new_uuid), uuid_to_longs(new_uuid))
-    nbt_file = load_nbt(path)
+    try:
+        nbt_file, compressed = load_nbt(path)
+    except Exception:
+        return replace_uuid_in_text_file(path, old_uuid, new_uuid)
     counter = [0]
     _replace_in_tag(nbt_file, old_forms, new_forms, counter)
     if counter[0] > 0:
-        save_nbt(nbt_file, path)
+        save_nbt(nbt_file, path, compressed)
     return counter[0]
 
 
@@ -201,8 +224,8 @@ def clone_player_to_level(save_dir: str, target_uuid: str) -> None:
                                uuid_dashed(target_uuid) + ".dat")
     level_path = os.path.join(save_dir, "level.dat")
 
-    player_nbt = deep_copy_nbt(load_nbt(player_path))
-    level_nbt = load_nbt(level_path)
+    player_nbt = deep_copy_nbt(load_nbt(player_path)[0])
+    level_nbt, level_compressed = load_nbt(level_path)
 
     if "Data" not in level_nbt:
         raise ValueError("level.dat 中缺少 Data 标签，可能不是有效的存档")
@@ -218,4 +241,4 @@ def clone_player_to_level(save_dir: str, target_uuid: str) -> None:
         tag.name = key
         player_compound[key] = tag
 
-    save_nbt(level_nbt, level_path)
+    save_nbt(level_nbt, level_path, level_compressed)
