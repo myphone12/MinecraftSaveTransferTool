@@ -15,13 +15,23 @@
 
 import base64
 import os
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import player_api
 from nbt_ops import UUID_RE, uuid_dashed
 from operations import MigrateUuidOp, OperationManager, SetHostOp
-from save_manager import SaveManager
+from save_manager import (
+    ALL_PARTS,
+    PART_ADVANCEMENTS,
+    PART_LABELS,
+    PART_OTHER,
+    PART_PLAYERDATA,
+    PART_STATS,
+    SaveManager,
+    classify_path,
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 AVATAR_SIZE = 32      # 头像显示边长（像素）
@@ -166,11 +176,31 @@ class App:
             anchor="w", padx=10, pady=(8, 2))
         self.dst_combo = ttk.Combobox(mig_frame)   # 可编辑，允许输入新 UUID
         self.dst_combo.pack(fill=tk.X, padx=10)
+
+        # 迁移范围复选框（默认全部勾选）
+        parts_frame = ttk.Frame(mig_frame)
+        parts_frame.pack(fill=tk.X, padx=10, pady=(8, 0))
+        ttk.Label(parts_frame, text="迁移范围：").grid(row=0, column=0,
+                                                      sticky="w", pady=1)
+        self.part_vars = {}
+        self.part_checks = []
+        for i, (key, label) in enumerate([
+                (PART_PLAYERDATA, "玩家数据"),
+                (PART_ADVANCEMENTS, "进度数据"),
+                (PART_STATS, "统计数据"),
+                (PART_OTHER, "其他(mod数据)")]):
+            var = tk.BooleanVar(value=True)
+            self.part_vars[key] = var
+            cb = ttk.Checkbutton(parts_frame, text=label, variable=var)
+            cb.grid(row=i // 2, column=1 + i % 2, sticky="w", padx=(6, 10), pady=1)
+            self.part_checks.append(cb)
+
         self.mig_btn = ttk.Button(mig_frame, text="确认", command=self.on_migrate)
-        self.mig_btn.pack(pady=10)
+        self.mig_btn.pack(pady=8)
         ttk.Label(mig_frame, foreground="#666", wraplength=320, justify="left",
                   text="说明：搜索存档中文件名含目标 UUID 的 .dat/.nbt/.snbt/.json，"
                        "替换文件内容与文件名；若双方均有文件则自动交换。"
+                       "点击确认后将在下方日志区列出会修改的文件。"
                   ).pack(anchor="w", padx=10, pady=(0, 8))
 
         # ---------- 底部状态栏 ----------
@@ -182,6 +212,35 @@ class App:
         self.pending_var = tk.StringVar(value="")
         ttk.Label(status, textvariable=self.pending_var, foreground="#a33",
                   anchor="e").pack(side=tk.RIGHT)
+
+        # ---------- 底部日志区（状态栏上方） ----------
+        log_frame = ttk.LabelFrame(self.root, text="操作日志")
+        log_frame.pack(fill=tk.BOTH, side=tk.BOTTOM, padx=8, pady=(0, 2),
+                       expand=False)
+        self.log_text = scrolledtext.ScrolledText(
+            log_frame, height=9, wrap=tk.NONE, font=("Consolas", 9),
+            state=tk.DISABLED)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        # 不同类别日志的着色标签
+        self.log_text.tag_configure("time", foreground="#888")
+        self.log_text.tag_configure("warn", foreground="#b26a00")
+        self.log_text.tag_configure("error", foreground="#c00")
+        self.log_text.tag_configure("title", foreground="#06c",
+                                    font=("Consolas", 9, "bold"))
+
+    def log(self, msg: str, tag: str = ""):
+        """向日志区追加一行带时间戳的日志。"""
+        self.log_text.configure(state=tk.NORMAL)
+        stamp = time.strftime("[%H:%M:%S] ")
+        self.log_text.insert(tk.END, stamp, "time")
+        self.log_text.insert(tk.END, msg + "\n", tag)
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+
+    def log_lines(self, lines, tag: str = ""):
+        """批量追加多行日志。"""
+        for line in lines:
+            self.log(line, tag)
 
     def _on_mousewheel(self, event):
         # Windows 滚轮：delta 为正向上、为负向下
@@ -290,7 +349,8 @@ class App:
                                     else "disabled")
 
         for widget in (self.host_combo, self.host_btn,
-                       self.src_combo, self.dst_combo, self.mig_btn):
+                       self.src_combo, self.dst_combo, self.mig_btn,
+                       *self.part_checks):
             widget.configure(state="normal" if loaded else "disabled")
         if loaded:
             # 恢复只读下拉的状态
@@ -355,9 +415,12 @@ class App:
                 f"即将把以下 {self.om.cursor} 个操作写入存档：\n\n{ops_desc}\n\n"
                 f"存档目录：{self.sm.save_dir}\n\n建议先执行“备份存档”。是否继续？"):
             return
+        log = []
         try:
             log = self.om.execute_on(self.sm.save_dir)
         except Exception as e:
+            self.log_lines(log, "error")
+            self.log(f"保存失败：{e}", "error")
             messagebox.showerror("保存失败", f"执行操作时出错：\n{e}\n\n"
                                              f"存档可能已被部分修改，建议从备份恢复。")
             return
@@ -376,7 +439,8 @@ class App:
             pass
         self._refresh_all()
         self._set_status("已保存全部修改到存档")
-        self._show_log("保存完成", log)
+        self.log("保存全部修改到存档：完成", "title")
+        self.log_lines(log)
 
     def on_backup(self):
         try:
@@ -385,6 +449,7 @@ class App:
             messagebox.showerror("备份失败", str(e))
             return
         self._set_status(f"已备份存档到：{dest}")
+        self.log(f"备份存档完成：{dest}")
         messagebox.showinfo("备份完成", f"存档已完整复制到：\n{dest}")
 
     def on_save_as(self):
@@ -401,16 +466,21 @@ class App:
             messagebox.showerror("另存为失败", str(e))
             return
         self._set_status(f"已另存为：{path}")
-        self._show_log("另存为完成（原存档未修改）", log)
+        self.log(f"另存为修改存档：完成（原存档未修改），副本位于 {path}", "title")
+        self.log_lines(log)
 
     def on_undo(self):
         if self.om.undo():
+            undone = self.om.ops[self.om.cursor]
             self._set_status("已撤销上次修改")
+            self.log(f"撤销：{undone.describe()}", "warn")
             self._refresh_all()
 
     def on_redo(self):
         if self.om.redo():
+            redone = self.om.ops[self.om.cursor - 1]
             self._set_status("已重做修改")
+            self.log(f"重做：{redone.describe()}")
             self._refresh_all()
 
     def on_reset(self):
@@ -421,6 +491,7 @@ class App:
                                "是否继续？"):
             self.om.reset()
             self._set_status("已重置全部修改")
+            self.log("重置全部修改：待操作列表已清空", "warn")
             self._refresh_all()
 
     # ------------------------------------------------------------------
@@ -432,9 +503,19 @@ class App:
             messagebox.showwarning("未选择玩家", "请先在下拉列表中选择玩家。")
             return
         row = self._combo_rows[idx]
+        # 日志区预览将要修改的文件
+        self.log(f"确认修改房主：{row.display_name()} ({row.uuid})", "title")
+        self.log(f"  将修改：level.dat（Data/Player ← "
+                 f"playerdata/{row.uuid}.dat 的全部内容）")
+        self.log("  该操作已加入待操作列表，保存后生效")
         self.om.add(SetHostOp(row.uuid))
         self._set_status(f"已记录待操作：修改房主为 {row.display_name()} ({row.uuid})")
         self._refresh_all()
+
+    def _selected_parts(self):
+        """读取迁移范围复选框，返回分类键的 frozenset。"""
+        parts = frozenset(k for k, v in self.part_vars.items() if v.get())
+        return parts if parts else None   # 全不勾选视为无效，由调用方提示
 
     def on_migrate(self):
         idx = self.src_combo.current()
@@ -464,30 +545,60 @@ class App:
         if src == dst:
             messagebox.showwarning("UUID 相同", "目标 UUID 与要修改成的 UUID 相同。")
             return
-        if not self.sm.find_uuid_files(dst):
-            # 目标不存在文件 → 单向迁移，提示用户确认
+
+        # 迁移范围
+        parts = self._selected_parts()
+        if parts is None:
+            messagebox.showwarning("未选择迁移范围", "请至少勾选一个迁移范围。")
+            return
+
+        # 日志区预览：按分类列出将会修改的文件，供用户检查
+        src_files = self.sm.find_uuid_files(src, parts)
+        dst_files = self.sm.find_uuid_files(dst, parts)
+        swap = bool(src_files and dst_files)
+
+        scope = "、".join(PART_LABELS[p] for p in ALL_PARTS if p in parts)
+        self.log(f"确认 UUID {'交换' if swap else '迁移'}：{src} → {dst}"
+                 f"（范围：{scope}）", "title")
+        if not src_files and not dst_files:
+            self.log("  警告：所选范围内未找到任何相关文件，保存时此操作不会生效",
+                     "warn")
+        self._log_file_preview("源 UUID 文件", src_files, swap)
+        if dst_files:
+            self._log_file_preview("目标 UUID 文件", dst_files, swap)
+        if not src_files and not dst_files:
+            if not messagebox.askyesno(
+                    "未找到文件",
+                    "所选范围内没有找到任何包含这两个 UUID 的文件，仍要记录该操作吗？"):
+                return
+        elif not swap:
             if not messagebox.askyesno(
                     "单向迁移确认",
-                    f"存档中没有找到 UUID {dst} 的任何文件，"
-                    f"将执行单向迁移（{src} → {dst}）。是否继续？"):
+                    f"仅一方有存档文件（源 {len(src_files)} 个 / "
+                    f"目标 {len(dst_files)} 个），将执行单向迁移。是否继续？\n"
+                    f"（文件清单见下方日志区）"):
                 return
+        self.log("  该操作已加入待操作列表，保存后生效")
 
-        self.om.add(MigrateUuidOp(src, dst))
+        self.om.add(MigrateUuidOp(src, dst, parts))
         self._set_status(f"已记录待操作：UUID 迁移 {src} → {dst}")
         self._refresh_all()
 
-    # ------------------------------------------------------------------
-    def _show_log(self, title: str, log):
-        """弹出日志窗口展示操作明细。"""
-        win = tk.Toplevel(self.root)
-        win.title(title)
-        win.geometry("640x420")
-        text = scrolledtext.ScrolledText(win, wrap=tk.NONE, font=("Consolas", 9))
-        text.pack(fill=tk.BOTH, expand=True)
-        text.insert(tk.END, "\n".join(log))
-        text.configure(state=tk.DISABLED)
-        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=6)
+    def _log_file_preview(self, header, files, swap: bool):
+        """在日志区按分类列出文件预览。"""
+        if not files:
+            return
+        self.log(f"  {header}（{len(files)} 个，"
+                 f"{'将与对方交换' if swap else '将迁移'}）：")
+        by_part = {}
+        for f in files:
+            by_part.setdefault(classify_path(self.sm.save_dir, f), []).append(f)
+        for part in ALL_PARTS:
+            for f in by_part.get(part, []):
+                rel = os.path.relpath(f, self.sm.save_dir)
+                self.log(f"    [{PART_LABELS[part]}] {rel}")
 
+    # ------------------------------------------------------------------
     def on_close(self):
         if self.om.has_pending():
             if not messagebox.askyesno(

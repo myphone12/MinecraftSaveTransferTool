@@ -45,14 +45,22 @@ class MigrateUuidOp:
     """UUID 迁移：把存档中 src 的玩家数据迁移到 dst。
 
     执行时若 src 与 dst 均有对应文件，则自动进行交换。
+    parts 限定迁移范围（playerdata/advancements/stats/other 分类集合，
+    None 表示全部）。
     """
 
-    def __init__(self, src: str, dst: str):
+    def __init__(self, src: str, dst: str, parts=None):
         self.src = uuid_dashed(src)
         self.dst = uuid_dashed(dst)
+        self.parts = frozenset(parts) if parts is not None else None
 
     def describe(self) -> str:
-        return f"UUID 迁移 {self.src} -> {self.dst}"
+        from save_manager import ALL_PARTS, PART_LABELS
+        if self.parts is None or self.parts == frozenset(ALL_PARTS):
+            scope = "全部范围"
+        else:
+            scope = "、".join(PART_LABELS[p] for p in ALL_PARTS if p in self.parts)
+        return f"UUID 迁移 {self.src} -> {self.dst}（{scope}）"
 
 
 # ---------------------------------------------------------------------------
@@ -95,19 +103,19 @@ def _is_hex2(name: str) -> bool:
             and all(c in "0123456789abcdefABCDEF" for c in name))
 
 
-def migrate_uuid_one_way(base_dir: str, src: str, dst: str):
+def migrate_uuid_one_way(base_dir: str, src: str, dst: str, parts=None):
     """把 base_dir 存档中所有属于 src UUID 的文件迁移为 dst UUID。
 
-    流程：搜索文件名含 src 的 .dat/.nbt/.snbt/.json → 替换文件内容中的
-    UUID（NBT 树 / 文本）→ 重命名文件；若文件位于以 src 前两位十六进制
-    命名的哈希目录中，一并重命名该目录。返回操作日志（字符串列表）。
+    流程：搜索文件名含 src 的 .dat/.nbt/.snbt/.json（按 parts 范围过滤）→
+    替换文件内容中的 UUID（NBT 树 / 文本）→ 重命名文件；若文件位于以 src
+    前两位十六进制命名的哈希目录中，一并重命名该目录。返回操作日志。
     """
     src_u, dst_u = uuid_undashed(src), uuid_undashed(dst)
     log = []
 
-    files = find_uuid_files(base_dir, src)
+    files = find_uuid_files(base_dir, src, parts)
     if not files:
-        log.append(f"未找到文件名包含 {uuid_dashed(src)} 的文件，跳过")
+        log.append(f"未找到文件名包含 {uuid_dashed(src)} 的文件（所选范围内），跳过")
         return log
 
     # 按目录分组：哈希目录只需重命名一次，之后再处理其中的文件
@@ -246,21 +254,21 @@ class OperationManager:
 
     def _execute_migrate(self, target_dir: str, op: MigrateUuidOp):
         """执行 UUID 迁移；若两个 UUID 的文件都存在则通过临时 UUID 交换。"""
-        src_files = find_uuid_files(target_dir, op.src)
-        dst_files = find_uuid_files(target_dir, op.dst)
+        src_files = find_uuid_files(target_dir, op.src, op.parts)
+        dst_files = find_uuid_files(target_dir, op.dst, op.parts)
         log = []
 
         if src_files and dst_files:
-            # 交换：src -> 临时 -> dst，dst -> src，临时 -> dst
-            log.append("检测到双方均有存档文件，执行交换")
-            log += migrate_uuid_one_way(target_dir, op.src, TEMP_SWAP_UUID)
-            log += migrate_uuid_one_way(target_dir, op.dst, op.src)
-            log += migrate_uuid_one_way(target_dir, TEMP_SWAP_UUID, op.dst)
+            # 交换：src -> 临时，dst -> src，临时 -> dst
+            log.append(f"检测到双方均有存档文件（{len(src_files)} / {len(dst_files)} 个），执行交换")
+            log += migrate_uuid_one_way(target_dir, op.src, TEMP_SWAP_UUID, op.parts)
+            log += migrate_uuid_one_way(target_dir, op.dst, op.src, op.parts)
+            log += migrate_uuid_one_way(target_dir, TEMP_SWAP_UUID, op.dst, op.parts)
         elif src_files:
-            log.append("仅源 UUID 有存档文件，执行单向迁移")
-            log += migrate_uuid_one_way(target_dir, op.src, op.dst)
+            log.append(f"仅源 UUID 有存档文件（{len(src_files)} 个），执行单向迁移")
+            log += migrate_uuid_one_way(target_dir, op.src, op.dst, op.parts)
         else:
-            log.append(f"警告：存档中未找到 {op.src} 的文件，此操作未执行")
+            log.append(f"警告：存档中所选范围内未找到 {op.src} 的文件，此操作未执行")
         return log
 
     # ---------------- 备份 / 另存为 ----------------

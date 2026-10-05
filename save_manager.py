@@ -15,6 +15,30 @@ from nbt_ops import UUID_RE, uuid_dashed, uuid_undashed
 # 参与 UUID 迁移的文件扩展名
 UUID_FILE_EXTS = (".dat", ".nbt", ".snbt", ".json")
 
+# 迁移范围分类：按文件相对存档根目录的第一级文件夹划分
+PART_PLAYERDATA = "playerdata"      # 玩家数据
+PART_ADVANCEMENTS = "advancements"  # 进度数据
+PART_STATS = "stats"                # 统计数据
+PART_OTHER = "other"                # 其他（mod 数据）
+ALL_PARTS = (PART_PLAYERDATA, PART_ADVANCEMENTS, PART_STATS, PART_OTHER)
+
+# 分类键 → UI 显示名
+PART_LABELS = {
+    PART_PLAYERDATA: "玩家数据",
+    PART_ADVANCEMENTS: "进度数据",
+    PART_STATS: "统计数据",
+    PART_OTHER: "其他(mod数据)",
+}
+
+
+def classify_path(save_dir: str, path: str) -> str:
+    """返回文件所属的迁移范围分类（按相对路径的第一级文件夹判断）。"""
+    rel = os.path.relpath(path, save_dir)
+    top = rel.split(os.sep)[0].lower()
+    if top in (PART_PLAYERDATA, PART_ADVANCEMENTS, PART_STATS):
+        return top
+    return PART_OTHER
+
 
 class PlayerEntry:
     """一名玩家的显示状态。名称与头像先为占位值，API 返回后更新。"""
@@ -29,11 +53,12 @@ class PlayerEntry:
         return self.name if self.online else "离线玩家"
 
 
-def find_uuid_files(save_dir: str, uuid: str):
+def find_uuid_files(save_dir: str, uuid: str, parts=None):
     """递归搜索存档目录中文件名包含目标 UUID 的 .dat/.nbt/.snbt/.json 文件。
 
     返回绝对路径列表。文件名匹配同时考虑带横杠与无横杠两种形式，
-    大小写不敏感。模块级函数以便对"另存为"的副本目录复用。
+    大小写不敏感。parts 为迁移范围分类集合（None 表示不过滤）。
+    模块级函数以便对"另存为"的副本目录复用。
     """
     dashed = uuid_dashed(uuid)
     undashed = uuid_undashed(uuid)
@@ -43,7 +68,9 @@ def find_uuid_files(save_dir: str, uuid: str):
             lower = fname.lower()
             if dashed in lower or undashed in lower:
                 if lower.endswith(UUID_FILE_EXTS):
-                    results.append(os.path.join(root, fname))
+                    path = os.path.join(root, fname)
+                    if parts is None or classify_path(save_dir, path) in parts:
+                        results.append(path)
     return sorted(results)
 
 
@@ -91,6 +118,6 @@ class SaveManager:
                             uuid_dashed(uuid) + ".dat")
 
     # ------------------------------------------------------------------
-    def find_uuid_files(self, uuid: str):
+    def find_uuid_files(self, uuid: str, parts=None):
         """递归搜索存档中文件名包含目标 UUID 的文件（委托模块级函数）。"""
-        return find_uuid_files(self.save_dir, uuid)
+        return find_uuid_files(self.save_dir, uuid, parts)
