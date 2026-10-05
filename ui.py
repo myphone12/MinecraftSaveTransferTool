@@ -73,8 +73,8 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("Minecraft 存档玩家数据迁移工具")
-        root.geometry("920x560")
-        root.minsize(760, 460)
+        root.geometry("1000x780")
+        root.minsize(880, 640)
 
         self.sm = SaveManager()
         self.om = OperationManager(self.sm)
@@ -119,8 +119,9 @@ class App:
 
     def _build_layout(self):
         # 主分栏：左侧玩家列表 | 右侧功能面板
+        # 注意：先创建但不打包，等底部状态栏与日志区打包完成后再 pack，
+        # 保证窗口过小时底部区域的空间优先被保留（pack 按打包顺序分配空间）
         main = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        main.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 0))
 
         # ---------- 左侧：玩家列表（Canvas 滚动容器） ----------
         left = ttk.LabelFrame(main, text="当前存档玩家列表")
@@ -203,7 +204,7 @@ class App:
                        "点击确认后将在下方日志区列出会修改的文件。"
                   ).pack(anchor="w", padx=10, pady=(0, 8))
 
-        # ---------- 底部状态栏 ----------
+        # ---------- 底部状态栏（先于主分栏打包，确保空间不被挤占） ----------
         status = ttk.Frame(self.root)
         status.pack(fill=tk.X, side=tk.BOTTOM, padx=8, pady=4)
         self.status_var = tk.StringVar(value="未选择存档")
@@ -215,8 +216,7 @@ class App:
 
         # ---------- 底部日志区（状态栏上方） ----------
         log_frame = ttk.LabelFrame(self.root, text="操作日志")
-        log_frame.pack(fill=tk.BOTH, side=tk.BOTTOM, padx=8, pady=(0, 2),
-                       expand=False)
+        log_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=8, pady=(0, 2))
         self.log_text = scrolledtext.ScrolledText(
             log_frame, height=9, wrap=tk.NONE, font=("Consolas", 9),
             state=tk.DISABLED)
@@ -227,6 +227,9 @@ class App:
         self.log_text.tag_configure("error", foreground="#c00")
         self.log_text.tag_configure("title", foreground="#06c",
                                     font=("Consolas", 9, "bold"))
+
+        # 主分栏最后打包，占据剩余的全部空间
+        main.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 0))
 
     def log(self, msg: str, tag: str = ""):
         """向日志区追加一行带时间戳的日志。"""
@@ -243,11 +246,29 @@ class App:
             self.log(line, tag)
 
     def _on_mousewheel(self, event):
-        # Windows 滚轮：delta 为正向上、为负向下
-        if event.num == 4 or event.delta > 0:
-            self.canvas.yview_scroll(-1, "units")
-        elif event.num == 5 or event.delta < 0:
-            self.canvas.yview_scroll(1, "units")
+        # 仅当鼠标位于左侧玩家列表区域内时才滚动列表，
+        # 避免在日志区等其他区域滚动时误操作
+        widget = self.root.winfo_containing(event.x_root, event.y_root)
+        in_player_list = False
+        while widget is not None:
+            if widget is self.canvas:
+                in_player_list = True
+                break
+            widget = getattr(widget, "master", None)
+        if not in_player_list:
+            return
+
+        first, last = self.canvas.yview()
+        # 内容不足一屏时无需滚动
+        if first <= 0.0 and last >= 1.0:
+            return
+        up = event.num == 4 or event.delta > 0
+        # 边界钳制：已到顶部不再向上，已到底部不再向下
+        if up and first <= 0.0:
+            return
+        if not up and last >= 1.0:
+            return
+        self.canvas.yview_scroll(-1 if up else 1, "units")
 
     # ------------------------------------------------------------------
     # 刷新
