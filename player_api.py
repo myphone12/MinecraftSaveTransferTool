@@ -3,8 +3,7 @@
 
   - 名称：Mojang 官方 api.minecraftservices.com（主通道）
           / sessionserver.mojang.com（备用通道），正版玩家可查到
-  - 头像：mineskin.eu（按玩家名渲染，主通道）
-          / minotar.net（按 UUID 渲染，备用通道）
+  - 头像：Crafatar 第三方渲染服务
 
 获取失败（离线玩家 / 无网络 / API 异常）时，名称显示"离线玩家"，
 头像由 UI 层使用内置的史蒂夫像素画兜底。所有请求均在后台线程执行。
@@ -20,10 +19,17 @@ MOJANG_PROFILE_URLS = [
     "https://api.minecraftservices.com/minecraft/profile/lookup/{uuid}",
     "https://sessionserver.mojang.com/profile/{uuid}",
 ]
-# 头像渲染主通道：mineskin.eu，按玩家名获取 100x100 PNG
-MINESKIN_AVATAR_URL = "https://mineskin.eu/avatar/{name}/100.png"
-# 头像渲染备用通道：minotar.net，按 UUID 获取 64x64 PNG
-MINOTAR_AVATAR_URL = "https://minotar.net/avatar/{uuid}/64"
+# 按玩家名查 UUID 的接口（主/备），返回含 "id" 字段的 JSON
+MOJANG_NAME_LOOKUP_URLS = [
+    "https://api.minecraftservices.com/minecraft/profile/lookup/name/{name}",
+    "https://api.mojang.com/users/profiles/minecraft/{name}",
+]
+# 头像渲染服务（按顺序兜底）：部分账号 Crafatar 会返回 500，
+# 此时改用 Minotar。均返回 PNG 字节。
+AVATAR_URLS = [
+    "https://crafatar.com/avatars/{uuid}?size=64&overlay",
+    "https://minotar.net/avatar/{uuid}/64",
+]
 
 OFFLINE_NAME = "离线玩家"
 REQUEST_TIMEOUT = 8   # 单个请求超时秒数
@@ -40,14 +46,6 @@ def _http_get(url: str):
             return resp.read()
     except Exception:
         return None
-
-
-def _get_png(url: str):
-    """GET 并校验 PNG 魔数，防止把错误页当作图片；失败返回 None。"""
-    data = _http_get(url)
-    if data and data[:4] == b"\x89PNG":
-        return data
-    return None
 
 
 def fetch_name(uuid_undashed: str):
@@ -68,16 +66,32 @@ def fetch_name(uuid_undashed: str):
     return None
 
 
-def fetch_avatar(name: str, uuid_dashed: str):
-    """获取玩家头像 PNG 字节；主通道按玩家名、备用通道按 UUID。
+def fetch_uuid_by_name(name: str):
+    """按玩家名查询正版 UUID（无横杠小写）；失败返回 None。
 
-    全部失败返回 None（UI 层用史蒂夫兜底）。
+    依次尝试主/备两个官方接口，任一成功即返回。
     """
-    avatar = _get_png(MINESKIN_AVATAR_URL.format(
-        name=urllib.parse.quote(name)))
-    if avatar:
-        return avatar
-    return _get_png(MINOTAR_AVATAR_URL.format(uuid=uuid_dashed))
+    for url_tpl in MOJANG_NAME_LOOKUP_URLS:
+        data = _http_get(url_tpl.format(name=urllib.parse.quote(name)))
+        if not data:
+            continue
+        try:
+            uuid_str = json.loads(data.decode("utf-8")).get("id")
+            if isinstance(uuid_str, str) and uuid_str:
+                return uuid_str.lower()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+    return None
+
+
+def fetch_avatar(uuid_dashed: str):
+    """获取玩家头像 PNG 字节；依次尝试各渲染服务，全部失败返回 None。"""
+    for url_tpl in AVATAR_URLS:
+        data = _http_get(url_tpl.format(uuid=uuid_dashed))
+        # 校验 PNG 魔数，防止把错误页当作图片
+        if data and data[:4] == b"\x89PNG":
+            return data
+    return None
 
 
 def fetch_player_info(entry) -> None:
@@ -89,7 +103,7 @@ def fetch_player_info(entry) -> None:
         entry.name = name
         entry.online = True
         # 正版玩家才尝试拉取真实头像，离线玩家直接用史蒂夫兜底
-        entry.avatar_png = fetch_avatar(name, entry.uuid)
+        entry.avatar_png = fetch_avatar(entry.uuid)
 
 
 def fetch_all_players(players, on_player_done) -> ThreadPoolExecutor:
