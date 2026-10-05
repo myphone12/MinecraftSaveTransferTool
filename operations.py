@@ -16,15 +16,40 @@ import time
 
 from nbt_ops import (
     clone_player_to_level,
+    edit_player_data,
     replace_uuid_in_nbt_file,
     replace_uuid_in_text_file,
     uuid_dashed,
     uuid_undashed,
+    write_world_settings,
 )
 from save_manager import find_uuid_files
 
 # 交换 UUID 时使用的临时中转 UUID（合法十六进制格式，实际存档中不会出现）
 TEMP_SWAP_UUID = "deadbeef-dead-beef-dead-beefdeadbeef"
+
+# 世界参数字段 → 中文名（用于操作描述与日志）
+WORLD_FIELD_LABELS = {
+    "LevelName": "存档名称",
+    "Difficulty": "难度",
+    "DifficultyLocked": "锁定难度",
+    "allowCommands": "允许命令",
+    "GameType": "默认游戏模式",
+}
+DIFFICULTY_NAMES = {0: "和平", 1: "简单", 2: "普通", 3: "困难"}
+GAMEMODE_NAMES = {0: "生存", 1: "创造", 2: "冒险", 3: "旁观"}
+
+# 玩家参数字段 → 中文名
+PLAYER_FIELD_LABELS = {
+    "playerGameType": "游戏模式",
+    "Health": "生命值",
+    "foodLevel": "饥饿值",
+    "foodSaturationLevel": "饱和度",
+    "XpLevel": "经验等级",
+    "XpP": "经验进度",
+    "XpTotal": "累计经验",
+    "Score": "经验分数",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +86,45 @@ class MigrateUuidOp:
         else:
             scope = "、".join(PART_LABELS[p] for p in ALL_PARTS if p in self.parts)
         return f"UUID 迁移 {self.src} -> {self.dst}（{scope}）"
+
+
+class SetWorldOp:
+    """修改存档基础参数（level.dat 的 Data 标签：名称/难度/命令等）。"""
+
+    def __init__(self, settings: dict):
+        self.settings = dict(settings)
+
+    def describe(self) -> str:
+        parts = []
+        for key, value in self.settings.items():
+            label = WORLD_FIELD_LABELS.get(key, key)
+            if key == "Difficulty":
+                value = DIFFICULTY_NAMES.get(value, value)
+            elif key == "GameType":
+                value = GAMEMODE_NAMES.get(value, value)
+            elif isinstance(value, bool):
+                value = "是" if value else "否"
+            parts.append(f"{label}={value}")
+        return "修改存档参数：" + "，".join(parts)
+
+
+class EditPlayerOp:
+    """修改玩家参数（playerdata/<uuid>.dat；房主同步 level.dat）。"""
+
+    def __init__(self, uuid: str, changes: dict):
+        self.uuid = uuid_dashed(uuid)
+        self.changes = dict(changes)
+
+    def describe(self) -> str:
+        parts = []
+        for key, value in self.changes.items():
+            label = PLAYER_FIELD_LABELS.get(key, key)
+            if key == "playerGameType":
+                value = GAMEMODE_NAMES.get(value, value)
+            elif isinstance(value, float):
+                value = round(value, 2)
+            parts.append(f"{label}={value}")
+        return f"修改玩家参数 {self.uuid}：" + "，".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +314,19 @@ class OperationManager:
                 log.append(f"已将 {op.uuid} 的 playerdata 写入 level.dat 的 Data/Player")
             elif isinstance(op, MigrateUuidOp):
                 log.extend(self._execute_migrate(target_dir, op))
+            elif isinstance(op, SetWorldOp):
+                write_world_settings(target_dir, op.settings)
+                log.append("已写入 level.dat 的 Data 标签")
+            elif isinstance(op, EditPlayerOp):
+                player_path = os.path.join(
+                    target_dir, "playerdata", op.uuid + ".dat")
+                if not os.path.isfile(player_path):
+                    raise RuntimeError(
+                        f"找不到玩家数据 {player_path}，无法修改玩家参数")
+                also_level = edit_player_data(target_dir, op.uuid, op.changes)
+                log.append(f"已修改 playerdata/{op.uuid}.dat")
+                if also_level:
+                    log.append("该玩家是房主，已同步修改 level.dat 的 Data/Player")
         return log
 
     def _execute_migrate(self, target_dir: str, op: MigrateUuidOp):

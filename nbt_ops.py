@@ -241,6 +241,12 @@ def clone_player_to_level(save_dir: str, target_uuid: str) -> None:
         tag.name = key
         player_compound[key] = tag
 
+    # 保障：确保 Player/UUID 与目标玩家一致（游戏以该标签识别房主身份）
+    from nbt.nbt import TAG_Int_Array
+    uuid_tag = TAG_Int_Array(name="UUID")
+    uuid_tag.value = uuid_to_ints(target_uuid)
+    player_compound["UUID"] = uuid_tag
+
     save_nbt(level_nbt, level_path, level_compressed)
 
 
