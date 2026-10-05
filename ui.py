@@ -72,7 +72,22 @@ STEVE_PIXELS = [
 
 
 def make_steve_image() -> tk.PhotoImage:
-    """程序内绘制史蒂夫头像并放大到 AVATAR_SIZE。"""
+    """加载史蒂夫兜底头像。
+
+    优先使用 res/steve.png（按整数倍缩小到接近 AVATAR_SIZE），
+    文件缺失或损坏时回退为程序内绘制的 8x8 像素画。
+    """
+    steve_path = os.path.join(PROJECT_ROOT, "res", "steve.png")
+    if os.path.isfile(steve_path):
+        try:
+            img = tk.PhotoImage(file=steve_path)
+            factor = max(1, img.width() // AVATAR_SIZE)
+            if factor > 1:
+                img = img.subsample(factor, factor)
+            return img
+        except tk.TclError:
+            pass
+    # 回退：程序内绘制像素画
     img = tk.PhotoImage(width=8, height=8)
     for y, row in enumerate(STEVE_PIXELS):
         for x, ch in enumerate(row):

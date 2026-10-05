@@ -18,8 +18,12 @@ MOJANG_PROFILE_URLS = [
     "https://api.minecraftservices.com/minecraft/profile/lookup/{uuid}",
     "https://sessionserver.mojang.com/profile/{uuid}",
 ]
-# Crafatar 头像渲染接口：返回 64x64 PNG
-CRAFATAR_AVATAR_URL = "https://crafatar.com/avatars/{uuid}?size=64&overlay"
+# 头像渲染服务（按顺序兜底）：部分账号 Crafatar 会返回 500，
+# 此时改用 Minotar。均返回 PNG 字节。
+AVATAR_URLS = [
+    "https://crafatar.com/avatars/{uuid}?size=64&overlay",
+    "https://minotar.net/avatar/{uuid}/64",
+]
 
 OFFLINE_NAME = "离线玩家"
 REQUEST_TIMEOUT = 8   # 单个请求超时秒数
@@ -57,8 +61,13 @@ def fetch_name(uuid_undashed: str):
 
 
 def fetch_avatar(uuid_dashed: str):
-    """通过 Crafatar 获取玩家头像 PNG 字节；失败返回 None。"""
-    return _http_get(CRAFATAR_AVATAR_URL.format(uuid=uuid_dashed))
+    """获取玩家头像 PNG 字节；依次尝试各渲染服务，全部失败返回 None。"""
+    for url_tpl in AVATAR_URLS:
+        data = _http_get(url_tpl.format(uuid=uuid_dashed))
+        # 校验 PNG 魔数，防止把错误页当作图片
+        if data and data[:4] == b"\x89PNG":
+            return data
+    return None
 
 
 def fetch_player_info(entry) -> None:
