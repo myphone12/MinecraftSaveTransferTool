@@ -40,13 +40,14 @@ python main.py
 python -m nuitka --standalone --onefile ^
   --windows-icon-from-ico="./res/icon.ico" --enable-plugin=tk-inter ^
   --include-data-dir=res=res ^
-  --include-data-dir=NBT-version-1.5.1/nbt=NBT-version-1.5.1/nbt ^
+  --include-data-files=NBT-version-1.5.1/nbt/nbt.py=NBT-version-1.5.1/nbt/nbt.py ^
   --assume-yes-for-downloads main.py
 ```
 
 要点：
 - `--include-data-dir=res=res` 必须（图标资源）
-- `--include-data-dir=NBT-version-1.5.1/nbt=...` 必须：程序在运行时从该目录直接加载 `nbt.py` 源码（绕过 nbt 包 `__init__.py` 的星号导入，其在 Nuitka 编译后会导致循环导入崩溃，且不受 pip 安装的同名包干扰），因此无需设置 PYTHONPATH，PowerShell/cmd/bash 下命令一致
+- `--include-data-files=...nbt.py=...` 必须：程序在运行时直接加载该源码文件（绕过 nbt 包 `__init__.py` 的星号导入，其在 Nuitka 编译后会导致循环导入崩溃，且不受 pip 安装的同名包干扰），因此无需设置 PYTHONPATH，PowerShell/cmd/bash 下命令一致
+- 注意用 `--include-data-files` 而不是 `--include-data-dir` 打包 nbt.py：目录因含 `__init__.py` 会被 Nuitka 跳过
 
 ## 项目结构
 
