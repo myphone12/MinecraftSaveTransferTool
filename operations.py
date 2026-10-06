@@ -15,10 +15,11 @@ import shutil
 import time
 
 from nbt_ops import (
-    clone_player_to_level,
     edit_player_data,
+    playerdata_path,
     replace_uuid_in_nbt_file,
     replace_uuid_in_text_file,
+    set_host_in_level,
     uuid_dashed,
     uuid_undashed,
     write_world_settings,
@@ -305,26 +306,26 @@ class OperationManager:
         for op in self.active_ops():
             log.append(f"== {op.describe()} ==")
             if isinstance(op, SetHostOp):
-                player_path = os.path.join(
-                    target_dir, "playerdata", op.uuid + ".dat")
-                if not os.path.isfile(player_path):
+                p_path = playerdata_path(target_dir, op.uuid)
+                if not os.path.isfile(p_path):
                     raise RuntimeError(
-                        f"找不到玩家数据 {player_path}，无法修改房主")
-                clone_player_to_level(target_dir, op.uuid)
-                log.append(f"已将 {op.uuid} 的 playerdata 写入 level.dat 的 Data/Player")
+                        f"找不到玩家数据 {p_path}，无法修改房主")
+                # 按存档布局自动处理：旧版克隆到 Data/Player（缺失则创建），
+                # 新版写入 Data/singleplayer_uuid（缺失则创建）
+                set_host_in_level(target_dir, op.uuid)
+                log.append(f"已将房主设为 {op.uuid}（按存档版本写入 level.dat）")
             elif isinstance(op, MigrateUuidOp):
                 log.extend(self._execute_migrate(target_dir, op))
             elif isinstance(op, SetWorldOp):
                 write_world_settings(target_dir, op.settings)
                 log.append("已写入 level.dat 的 Data 标签")
             elif isinstance(op, EditPlayerOp):
-                player_path = os.path.join(
-                    target_dir, "playerdata", op.uuid + ".dat")
-                if not os.path.isfile(player_path):
+                p_path = playerdata_path(target_dir, op.uuid)
+                if not os.path.isfile(p_path):
                     raise RuntimeError(
-                        f"找不到玩家数据 {player_path}，无法修改玩家参数")
+                        f"找不到玩家数据 {p_path}，无法修改玩家参数")
                 also_level = edit_player_data(target_dir, op.uuid, op.changes)
-                log.append(f"已修改 playerdata/{op.uuid}.dat")
+                log.append(f"已修改 {os.path.relpath(p_path, target_dir)}")
                 if also_level:
                     log.append("该玩家是房主，已同步修改 level.dat 的 Data/Player")
         return log

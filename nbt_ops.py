@@ -210,28 +210,44 @@ def replace_uuid_in_text_file(path: str, old_uuid: str, new_uuid: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# 修改房主：克隆 playerdata 到 level.dat 的 Data/Player
+# 修改房主：旧版克隆 playerdata 到 Data/Player；新版写 Data/singleplayer_uuid
 # ---------------------------------------------------------------------------
 
-def clone_player_to_level(save_dir: str, target_uuid: str) -> None:
-    """将目标玩家的 playerdata 内容整体替换 level.dat 中 Data/Player。
+def set_host_in_level(save_dir: str, target_uuid: str,
+                      layout: str = None) -> None:
+    """把存档房主设为目标玩家，缺失的标签/复合标签自动创建。
 
-    单人存档的房主玩家数据保存在 level.dat 的 Data/Player 复合标签中，
-    因此把目标玩家 playerdata/<uuid>.dat 的全部内容深拷贝过去即可完成房主转移，
-    背包、属性、坐标等复合列表均无丢失。
+    旧版：level.dat 的 Data/Player 复合标签即房主数据。将目标玩家
+    playerdata 的全部内容深拷贝过去（背包、属性等复合列表无丢失）；
+    服务器存档没有 Player 复合标签时自动创建。
+    新版：房主由 Data/singleplayer_uuid（TAG_Int_Array）标记，
+    玩家数据始终在 players/data 中，直接写入该标签（缺失则创建）。
     """
-    player_path = os.path.join(save_dir, "playerdata",
-                               uuid_dashed(target_uuid) + ".dat")
-    level_path = os.path.join(save_dir, "level.dat")
+    from nbt.nbt import TAG_Compound, TAG_Int_Array
 
-    player_nbt = deep_copy_nbt(load_nbt(player_path)[0])
+    if layout is None:
+        layout = detect_save_layout(save_dir)
+    target_uuid = uuid_dashed(target_uuid)
+    player_path = playerdata_path(save_dir, target_uuid, layout)
+    level_path = os.path.join(save_dir, "level.dat")
     level_nbt, level_compressed = load_nbt(level_path)
 
     if "Data" not in level_nbt:
         raise ValueError("level.dat 中缺少 Data 标签，可能不是有效的存档")
     data = level_nbt["Data"]
-    if "Player" not in data:
-        raise ValueError("level.dat 的 Data 中缺少 Player 标签")
+
+    if layout == LAYOUT_NEW:
+        # 新版：写入/创建 singleplayer_uuid 标签
+        uuid_tag = TAG_Int_Array(name="singleplayer_uuid")
+        uuid_tag.value = uuid_to_ints(target_uuid)
+        data["singleplayer_uuid"] = uuid_tag
+        save_nbt(level_nbt, level_path, level_compressed)
+        return
+
+    # 旧版：克隆 playerdata 到 Data/Player（缺失则创建 Player 复合标签）
+    if "Player" not in data.keys():
+        data["Player"] = TAG_Compound(name="Player")
+    player_nbt = deep_copy_nbt(load_nbt(player_path)[0])
 
     player_compound = data["Player"]
     # 清空原有 Player 的所有子标签，再写入目标玩家的全部标签
@@ -242,12 +258,55 @@ def clone_player_to_level(save_dir: str, target_uuid: str) -> None:
         player_compound[key] = tag
 
     # 保障：确保 Player/UUID 与目标玩家一致（游戏以该标签识别房主身份）
-    from nbt.nbt import TAG_Int_Array
     uuid_tag = TAG_Int_Array(name="UUID")
     uuid_tag.value = uuid_to_ints(target_uuid)
     player_compound["UUID"] = uuid_tag
 
     save_nbt(level_nbt, level_path, level_compressed)
+
+
+# 兼容旧名称
+clone_player_to_level = set_host_in_level
+
+
+# ---------------------------------------------------------------------------
+# 存档格式检测与路径助手
+# ---------------------------------------------------------------------------
+
+# 存档布局：'old' = 旧版（playerdata/、Data/Player）
+#           'new' = 新版（players/data|advancements|stats、Data/singleplayer_uuid）
+LAYOUT_OLD = "old"
+LAYOUT_NEW = "new"
+
+
+def detect_save_layout(save_dir: str) -> str:
+    """检测存档布局：存在 players/data 目录或 level.dat 含 singleplayer_uuid
+    标签 → 新版；否则旧版。服务器存档（无 Player compound）按其目录结构判断。
+    """
+    if os.path.isdir(os.path.join(save_dir, "players", "data")):
+        return LAYOUT_NEW
+    try:
+        level_nbt, _ = load_nbt(os.path.join(save_dir, "level.dat"))
+        if "singleplayer_uuid" in level_nbt["Data"].keys():
+            return LAYOUT_NEW
+    except Exception:
+        pass
+    return LAYOUT_OLD
+
+
+def playerdata_dir(save_dir: str, layout: str = None) -> str:
+    """返回玩家数据目录：新版 players/data，旧版 playerdata。"""
+    if layout is None:
+        layout = detect_save_layout(save_dir)
+    if layout == LAYOUT_NEW:
+        return os.path.join(save_dir, "players", "data")
+    return os.path.join(save_dir, "playerdata")
+
+
+def playerdata_path(save_dir: str, uuid: str, layout: str = None) -> str:
+    """返回指定玩家 playerdata 主文件路径（布局感知）。"""
+    return os.path.join(playerdata_dir(save_dir, layout),
+                        uuid_dashed(uuid) + ".dat")
 
 
 # ---------------------------------------------------------------------------
@@ -261,17 +320,21 @@ def ints_to_uuid(ints) -> str:
 
 
 def detect_host_uuid(save_dir: str):
-    """从 level.dat 的 Data/Player/UUID 标签检测当前房主玩家的 UUID。
+    """检测当前房主玩家的 UUID。
 
-    单人存档中 level.dat 的 Player 复合标签即房主玩家数据，
-    其中的 UUID 标签（TAG_Int_Array）与 playerdata 文件名一致。
-    检测不到（标签缺失等）时返回 None。
+    旧版：level.dat 的 Data/Player/UUID（Player 复合标签即房主数据）；
+    新版：level.dat 的 Data/singleplayer_uuid。
+    检测不到（服务器存档无房主等）时返回 None。
     """
     try:
         level_nbt, _ = load_nbt(os.path.join(save_dir, "level.dat"))
-        player = level_nbt["Data"]["Player"]
-        if "UUID" in player.keys():
-            return ints_to_uuid(list(player["UUID"].value))
+        data = level_nbt["Data"]
+        if "singleplayer_uuid" in data.keys():
+            return ints_to_uuid(list(data["singleplayer_uuid"].value))
+        if "Player" in data.keys():
+            player = data["Player"]
+            if "UUID" in player.keys():
+                return ints_to_uuid(list(player["UUID"].value))
     except Exception:
         pass
     return None
@@ -281,31 +344,95 @@ def detect_host_uuid(save_dir: str):
 # 存档基础参数（level.dat 的 Data 标签）
 # ---------------------------------------------------------------------------
 
+# 新版 difficulty_settings/difficulty 字符串 ↔ 难度数值
+DIFFICULTY_STR_TO_INT = {"peaceful": 0, "easy": 1, "normal": 2, "hard": 3}
+DIFFICULTY_INT_TO_STR = {v: k for k, v in DIFFICULTY_STR_TO_INT.items()}
+
+
 def read_world_settings(save_dir: str) -> dict:
-    """读取存档基础参数：名称、难度、锁定难度、允许命令、默认游戏模式。"""
+    """读取存档基础参数：名称、难度、锁定难度、允许命令、默认游戏模式。
+
+    旧版难度存于 Data/Difficulty（byte）与 Data/DifficultyLocked（byte）；
+    新版存于 Data/difficulty_settings 复合标签（difficulty 为字符串、
+    locked 为 byte）。缺失的标签按游戏默认值补齐（普通难度、未锁定）。
+    """
     level_nbt, _ = load_nbt(os.path.join(save_dir, "level.dat"))
     data = level_nbt["Data"]
-    settings = {
-        "LevelName": str(data["LevelName"].value),
-        "Difficulty": int(data["Difficulty"].value),
-        "DifficultyLocked": bool(data["DifficultyLocked"].value),
-        "allowCommands": bool(data["allowCommands"].value),
-        "GameType": int(data["GameType"].value),
+
+    if "difficulty_settings" in data.keys():
+        # 新版布局
+        ds = data["difficulty_settings"]
+        diff_str = str(ds["difficulty"].value) if "difficulty" in ds.keys() \
+            else "normal"
+        difficulty = DIFFICULTY_STR_TO_INT.get(diff_str.lower(), 2)
+        locked = bool(ds["locked"].value) if "locked" in ds.keys() else False
+    else:
+        # 旧版布局
+        difficulty = int(data["Difficulty"].value) \
+            if "Difficulty" in data.keys() else 2
+        locked = bool(data["DifficultyLocked"].value) \
+            if "DifficultyLocked" in data.keys() else False
+
+    return {
+        "LevelName": str(data["LevelName"].value)
+        if "LevelName" in data.keys() else "",
+        "Difficulty": difficulty,
+        "DifficultyLocked": locked,
+        "allowCommands": bool(data["allowCommands"].value)
+        if "allowCommands" in data.keys() else False,
+        "GameType": int(data["GameType"].value)
+        if "GameType" in data.keys() else 0,
     }
-    return settings
 
 
 def write_world_settings(save_dir: str, settings: dict) -> None:
-    """把存档基础参数写入 level.dat 的 Data 标签（只写传入的键）。"""
+    """把存档基础参数写入 level.dat 的 Data 标签（只写传入的键）。
+
+    按存档布局写入对应位置，缺失的标签/复合标签自动创建。
+    """
+    from nbt.nbt import TAG_Byte, TAG_Compound, TAG_Int, TAG_String
+
     level_path = os.path.join(save_dir, "level.dat")
     level_nbt, compressed = load_nbt(level_path)
     data = level_nbt["Data"]
+    layout = detect_save_layout(save_dir)
+
+    def _set(compound, key, value, tag_cls):
+        """设置标签值；缺失时按给定类型创建。"""
+        if key in compound.keys():
+            compound[key].value = value
+        else:
+            compound[key] = tag_cls(name=key, value=value)
+
     for key, value in settings.items():
-        if key not in data.keys():
-            raise ValueError(f"level.dat 的 Data 中缺少 {key} 标签")
-        tag = data[key]
-        # bool 需转回 byte 值（TAG_Byte 存储 0/1）
-        tag.value = int(value) if isinstance(value, bool) else value
+        if key == "Difficulty":
+            if layout == LAYOUT_NEW or "difficulty_settings" in data.keys():
+                # 新版：difficulty_settings/difficulty 为字符串
+                if "difficulty_settings" not in data.keys():
+                    data["difficulty_settings"] = TAG_Compound(
+                        name="difficulty_settings")
+                _set(data["difficulty_settings"], "difficulty",
+                     DIFFICULTY_INT_TO_STR.get(int(value), "normal"), TAG_String)
+            else:
+                _set(data, "Difficulty", int(value), TAG_Byte)
+        elif key == "DifficultyLocked":
+            locked = 1 if value else 0
+            if layout == LAYOUT_NEW or "difficulty_settings" in data.keys():
+                if "difficulty_settings" not in data.keys():
+                    data["difficulty_settings"] = TAG_Compound(
+                        name="difficulty_settings")
+                _set(data["difficulty_settings"], "locked", locked, TAG_Byte)
+            else:
+                _set(data, "DifficultyLocked", locked, TAG_Byte)
+        elif key == "LevelName":
+            _set(data, "LevelName", str(value), TAG_String)
+        elif key == "allowCommands":
+            _set(data, "allowCommands", 1 if value else 0, TAG_Byte)
+        elif key == "GameType":
+            _set(data, "GameType", int(value), TAG_Int)
+        else:
+            raise ValueError(f"不支持的世界参数字段：{key}")
+
     save_nbt(level_nbt, level_path, compressed)
 
 
@@ -370,30 +497,35 @@ def _apply_player_changes(compound, changes: dict) -> None:
 
 
 def edit_player_data(save_dir: str, uuid: str, changes: dict) -> bool:
-    """修改玩家参数：写入 playerdata/<uuid>.dat。
+    """修改玩家参数：写入玩家数据文件（布局感知路径）。
 
-    若该玩家正是 level.dat 中记录的房主，同步修改 Data/Player 的对应标签。
-    返回是否同时修改了 level.dat。
+    仅旧版存档需要双写：若该玩家正是 level.dat 中记录的房主且
+    Data/Player 复合标签存在，同步修改其中对应标签。
+    新版房主数据就在 players/data 文件中（singleplayer_uuid 仅是标记），
+    无需双写。返回是否同时修改了 level.dat。
     """
     uuid = uuid_dashed(uuid)
-    player_path = os.path.join(save_dir, "playerdata", uuid + ".dat")
+    layout = detect_save_layout(save_dir)
+    player_path = playerdata_path(save_dir, uuid, layout)
     player_nbt, player_compressed = load_nbt(player_path)
     _apply_player_changes(player_nbt, changes)
     save_nbt(player_nbt, player_path, player_compressed)
 
-    also_level = detect_host_uuid(save_dir) == uuid
-    if also_level:
+    also_level = False
+    if layout == LAYOUT_OLD and detect_host_uuid(save_dir) == uuid:
         level_path = os.path.join(save_dir, "level.dat")
         level_nbt, level_compressed = load_nbt(level_path)
-        _apply_player_changes(level_nbt["Data"]["Player"], changes)
-        save_nbt(level_nbt, level_path, level_compressed)
+        data = level_nbt["Data"]
+        if "Player" in data.keys():
+            _apply_player_changes(data["Player"], changes)
+            save_nbt(level_nbt, level_path, level_compressed)
+            also_level = True
     return also_level
 
 
 def read_player_fields(save_dir: str, uuid: str) -> dict:
-    """读取玩家当前参数值（用于编辑弹窗回显）。"""
-    player_path = os.path.join(save_dir, "playerdata",
-                               uuid_dashed(uuid) + ".dat")
+    """读取玩家当前参数值（用于编辑弹窗回显，布局感知路径）。"""
+    player_path = playerdata_path(save_dir, uuid)
     player_nbt, _ = load_nbt(player_path)
     values = {}
     for key in PLAYER_FIELD_TYPES:

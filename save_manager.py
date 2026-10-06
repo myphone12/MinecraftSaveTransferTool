@@ -10,12 +10,22 @@
 import os
 import re
 
-from nbt_ops import UUID_RE, detect_host_uuid, uuid_dashed, uuid_undashed
+from nbt_ops import (
+    UUID_RE,
+    detect_host_uuid,
+    detect_save_layout,
+    playerdata_dir,
+    playerdata_path,
+    uuid_dashed,
+    uuid_undashed,
+)
 
 # 参与 UUID 迁移的文件扩展名
 UUID_FILE_EXTS = (".dat", ".nbt", ".snbt", ".json")
 
-# 迁移范围分类：按文件相对存档根目录的第一级文件夹划分
+# 迁移范围分类：按文件相对存档根目录的文件夹划分
+# 旧版为一级目录（playerdata/advancements/stats），
+# 新版为 players/ 下的二级目录（players/data|advancements|stats）
 PART_PLAYERDATA = "playerdata"      # 玩家数据
 PART_ADVANCEMENTS = "advancements"  # 进度数据
 PART_STATS = "stats"                # 统计数据
@@ -30,13 +40,28 @@ PART_LABELS = {
     PART_OTHER: "其他(mod数据)",
 }
 
+# 新版存档 players/ 下二级目录 → 分类
+_NEW_SUB_DIRS = {
+    "data": PART_PLAYERDATA,
+    "advancements": PART_ADVANCEMENTS,
+    "stats": PART_STATS,
+}
+
 
 def classify_path(save_dir: str, path: str) -> str:
-    """返回文件所属的迁移范围分类（按相对路径的第一级文件夹判断）。"""
+    """返回文件所属的迁移范围分类（兼容新旧两版目录结构）。
+
+    旧版：playerdata/、advancements/、stats/ 一级目录；
+    新版：players/data、players/advancements、players/stats 二级目录；
+    其余一律归为其他（mod 数据）。
+    """
     rel = os.path.relpath(path, save_dir)
-    top = rel.split(os.sep)[0].lower()
+    parts = [p.lower() for p in rel.split(os.sep)]
+    top = parts[0]
     if top in (PART_PLAYERDATA, PART_ADVANCEMENTS, PART_STATS):
         return top
+    if top == "players" and len(parts) > 1:
+        return _NEW_SUB_DIRS.get(parts[1], PART_OTHER)
     return PART_OTHER
 
 
@@ -81,12 +106,14 @@ class SaveManager:
         self.save_dir = None          # 存档根目录路径
         self.players = []             # list[PlayerEntry]
         self.host_uuid = None         # 当前 level.dat 中检测到的房主 UUID
+        self.layout = None            # 存档布局（'old' / 'new'）
 
     # ------------------------------------------------------------------
     def load(self, save_dir: str) -> None:
-        """加载存档：校验目录结构并扫描玩家 UUID。
+        """加载存档：校验目录结构、检测布局并扫描玩家 UUID。
 
-        校验 level.dat 存在（确认是有效存档），然后从 playerdata/*.dat
+        校验 level.dat 存在（确认是有效存档），检测新版/旧版布局，
+        然后从玩家数据目录（旧版 playerdata/、新版 players/data/）
         的文件名中提取 UUID（忽略 _old 备份文件）。
         """
         save_dir = os.path.abspath(save_dir)
@@ -95,13 +122,15 @@ class SaveManager:
 
         self.save_dir = save_dir
         self.players = []
-        # 从 level.dat 的 Data/Player/UUID 检测当前房主
+        self.layout = detect_save_layout(save_dir)
+        # 旧版从 Data/Player/UUID、新版从 Data/singleplayer_uuid 检测房主；
+        # 服务器存档两者皆无 → None
         self.host_uuid = detect_host_uuid(save_dir)
 
-        playerdata_dir = os.path.join(save_dir, "playerdata")
-        if os.path.isdir(playerdata_dir):
+        pd_dir = playerdata_dir(save_dir, self.layout)
+        if os.path.isdir(pd_dir):
             seen = set()
-            for fname in os.listdir(playerdata_dir):
+            for fname in os.listdir(pd_dir):
                 stem, ext = os.path.splitext(fname)
                 # 只处理 .dat 主文件（.dat_old 的扩展名是 .dat_old，天然被排除）
                 if ext.lower() != ".dat":
@@ -116,9 +145,8 @@ class SaveManager:
         return self.save_dir is not None
 
     def get_playerdata_path(self, uuid: str) -> str:
-        """返回指定玩家 playerdata 主文件路径。"""
-        return os.path.join(self.save_dir, "playerdata",
-                            uuid_dashed(uuid) + ".dat")
+        """返回指定玩家 playerdata 主文件路径（布局感知）。"""
+        return playerdata_path(self.save_dir, uuid, self.layout)
 
     # ------------------------------------------------------------------
     def find_uuid_files(self, uuid: str, parts=None):

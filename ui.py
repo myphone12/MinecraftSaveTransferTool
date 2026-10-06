@@ -577,6 +577,18 @@ class App:
 
         self._set_status(f"已加载存档：{path}，共 {len(self.sm.players)} 名玩家，"
                          f"正在获取在线信息…")
+        # 输出格式检测结果，便于用户确认存档版本与房主状态
+        if self.sm.layout == "new":
+            self.log("检测到新版存档结构（players/ 目录，房主由 "
+                     "singleplayer_uuid 标记）", "title")
+        else:
+            self.log("检测到旧版存档结构（playerdata/ 目录，房主数据存于 "
+                     "level.dat 的 Data/Player）", "title")
+        if self.sm.host_uuid:
+            self.log(f"当前房主：{self.sm.host_uuid}")
+        else:
+            self.log("未检测到房主（可能为服务器存档）；"
+                     "执行“修改房主”时将自动创建所需标签", "warn")
         self._refresh_all()
 
         # 后台线程获取玩家名与头像，完成后调度回主线程刷新
@@ -839,9 +851,12 @@ class App:
             op = EditPlayerOp(uuid, changes)
             self.log(f"确认修改玩家参数：{row.display_name()} ({uuid})", "title")
             self.log(f"  {op.describe()}")
-            is_host_now = (self.om.display_host_uuid() or self.sm.host_uuid) == uuid
-            target = "playerdata 文件" + ("与 level.dat（该玩家是房主）"
-                                          if is_host_now else "")
+            # 仅旧版存档的房主需要 level.dat 双写（新版房主数据就在 players/data）
+            is_host_now = (self.sm.layout == "old"
+                           and (self.om.display_host_uuid()
+                                or self.sm.host_uuid) == uuid)
+            target = "玩家数据文件" + ("与 level.dat（该玩家是房主）"
+                                       if is_host_now else "")
             self.log(f"  将修改：{target}；已加入待操作列表，保存后生效")
             self.om.add(op)
             self._set_status(f"已记录待操作：修改玩家参数 {uuid}")
