@@ -36,14 +36,17 @@ python main.py
 
 ## 打包 exe（Nuitka）
 
-```bash
-set PYTHONPATH=.\NBT-version-1.5.1
+```
 python -m nuitka --standalone --onefile ^
   --windows-icon-from-ico="./res/icon.ico" --enable-plugin=tk-inter ^
-  --include-data-dir=res=res --assume-yes-for-downloads main.py
+  --include-data-dir=res=res ^
+  --include-data-dir=NBT-version-1.5.1/nbt=NBT-version-1.5.1/nbt ^
+  --assume-yes-for-downloads main.py
 ```
 
-要点：`--include-data-dir=res=res` 必须（图标资源）；vendored nbt 包的 `__init__.py` 已改为显式导入以兼容 Nuitka。
+要点：
+- `--include-data-dir=res=res` 必须（图标资源）
+- `--include-data-dir=NBT-version-1.5.1/nbt=...` 必须：程序在运行时从该目录直接加载 `nbt.py` 源码（绕过 nbt 包 `__init__.py` 的星号导入，其在 Nuitka 编译后会导致循环导入崩溃，且不受 pip 安装的同名包干扰），因此无需设置 PYTHONPATH，PowerShell/cmd/bash 下命令一致
 
 ## 项目结构
 

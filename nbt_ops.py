@@ -8,24 +8,41 @@
   3. 将目标玩家 playerdata 完整克隆为 level.dat 的 Data/Player（修改房主）
 """
 
+import importlib.util
 import io
 import os
 import re
-import sys
 
-# 将本地 nbt 库加入模块搜索路径（未安装到 site-packages，直接以源码目录引用）
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "NBT-version-1.5.1"))
+_NBT_SOURCE = os.path.join(PROJECT_ROOT, "NBT-version-1.5.1", "nbt", "nbt.py")
 
-from nbt.nbt import (  # noqa: E402
-    NBTFile,
-    TAG_Byte_Array,
-    TAG_Compound,
-    TAG_Int_Array,
-    TAG_List,
-    TAG_Long_Array,
-    TAG_String,
-)
+
+def _load_nbt_module():
+    """从源码文件直接加载 vendored nbt 库的核心模块 nbt.py。
+
+    不经过 nbt 包的 __init__.py：其 `from . import *` 写法在 Nuitka
+    编译后会因部分初始化包的属性访问失败而崩溃；且绕过包导入可避免
+    site-packages 中 pip 安装的同名旧版 nbt 包造成干扰。
+    nbt.py 仅依赖标准库（struct/gzip），可独立加载。
+    注意：打包时需把该源码文件作为数据文件带上，见 README 编译命令。
+    """
+    spec = importlib.util.spec_from_file_location("_vendored_nbt", _NBT_SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_nbt = _load_nbt_module()
+NBTFile = _nbt.NBTFile
+TAG_Byte = _nbt.TAG_Byte
+TAG_Byte_Array = _nbt.TAG_Byte_Array
+TAG_Compound = _nbt.TAG_Compound
+TAG_Float = _nbt.TAG_Float
+TAG_Int = _nbt.TAG_Int
+TAG_Int_Array = _nbt.TAG_Int_Array
+TAG_List = _nbt.TAG_List
+TAG_Long_Array = _nbt.TAG_Long_Array
+TAG_String = _nbt.TAG_String
 
 # UUID 正则：匹配标准的 8-4-4-4-12 十六进制格式
 UUID_RE = re.compile(
@@ -223,8 +240,6 @@ def set_host_in_level(save_dir: str, target_uuid: str,
     新版：房主由 Data/singleplayer_uuid（TAG_Int_Array）标记，
     玩家数据始终在 players/data 中，直接写入该标签（缺失则创建）。
     """
-    from nbt.nbt import TAG_Compound, TAG_Int_Array
-
     if layout is None:
         layout = detect_save_layout(save_dir)
     target_uuid = uuid_dashed(target_uuid)
@@ -390,8 +405,6 @@ def write_world_settings(save_dir: str, settings: dict) -> None:
 
     按存档布局写入对应位置，缺失的标签/复合标签自动创建。
     """
-    from nbt.nbt import TAG_Byte, TAG_Compound, TAG_Int, TAG_String
-
     level_path = os.path.join(save_dir, "level.dat")
     level_nbt, compressed = load_nbt(level_path)
     data = level_nbt["Data"]
@@ -474,7 +487,6 @@ def _set_player_field(compound, key: str, value) -> None:
     按 PLAYER_FIELD_TYPES 声明的类型强制转换（int 字段收到 18.0 这类
     浮点值时转回 int），保证 TAG_Int 的 struct 打包不出错。
     """
-    from nbt.nbt import TAG_Float, TAG_Int
     is_int = PLAYER_FIELD_TYPES[key] == "int"
     value = int(round(value)) if is_int else float(value)
     if key in compound.keys():
