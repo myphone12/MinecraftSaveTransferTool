@@ -79,7 +79,8 @@ class IconStatusBar(ttk.Frame):
             else:
                 continue
             cv.create_image(0, 0, anchor="nw", image=icon, tags="state")
-        self.num_var.set(f"{self._value / 2:g} / {MAX_VALUE // 2}")
+        # 标准格式显示：上限 20，每半格图标 = 1 点（与 NBT 数值一致）
+        self.num_var.set(f"{self._value} / {MAX_VALUE}")
 
     def _on_click(self, index: int, event):
         # 图标左半 → 半颗；右半 → 整颗
