@@ -25,7 +25,7 @@
 ## 运行环境
 
 - Python 3.10+（自带 tkinter）
-- NBT 读写使用仓库内置的 [nbt 库](NBT-version-1.5.1)（无需 pip 安装）
+- NBT 读写使用 [twoolie/NBT](https://github.com/twoolie/NBT)
 - 玩家名/头像获取需要网络；无网络时显示离线玩家与史蒂夫头像
 
 直接运行：
