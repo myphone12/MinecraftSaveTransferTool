@@ -172,8 +172,11 @@ def migrate_uuid_one_way(base_dir: str, src: str, dst: str, parts=None):
     """把 base_dir 存档中所有属于 src UUID 的文件迁移为 dst UUID。
 
     流程：搜索文件名含 src 的 .dat/.nbt/.snbt/.json（按 parts 范围过滤）→
-    替换文件内容中的 UUID（NBT 树 / 文本）→ 重命名文件；若文件位于以 src
-    前两位十六进制命名的哈希目录中，一并重命名该目录。返回操作日志。
+    替换文件内容中的 UUID（NBT 树 / 文本）→ 重命名文件。
+    若文件位于以 src 前两位十六进制命名的分桶目录中（部分模组如
+    Cobblemon 按 UUID 前两位分文件夹存放玩家数据），则把文件逐个移动
+    到 dst 前两位对应的分桶目录；同前缀其他玩家的文件保持不动，
+    原目录清空后才移除。返回操作日志。
     """
     src_u, dst_u = uuid_undashed(src), uuid_undashed(dst)
     log = []
@@ -183,46 +186,50 @@ def migrate_uuid_one_way(base_dir: str, src: str, dst: str, parts=None):
         log.append(f"未找到文件名包含 {uuid_dashed(src)} 的文件（所选范围内），跳过")
         return log
 
-    # 按目录分组：哈希目录只需重命名一次，之后再处理其中的文件
+    # 按目录分组处理；分桶目录（模组按 UUID 前两位十六进制分的子目录）
+    # 采用逐文件移动而非整目录改名，避免误伤同前缀的其他玩家文件
     by_dir = {}
     for f in files:
         by_dir.setdefault(os.path.dirname(f), []).append(f)
 
     for dir_path, paths in by_dir.items():
-        cur_dir = dir_path
         dir_base = os.path.basename(dir_path)
 
-        # 处理模组哈希目录（如 counter/6f/、cobblemonplayerdata/6f/）
-        if (_is_hex2(dir_base) and dir_base.lower() == src_u[:2]
-                and dir_base.lower() != dst_u[:2]):
-            new_dir = os.path.join(os.path.dirname(dir_path), dst_u[:2])
-            if os.path.isdir(new_dir):
-                # 目标哈希目录已存在（交换场景），文件并入即可
-                cur_dir = new_dir
-            else:
-                os.rename(dir_path, new_dir)
-                cur_dir = new_dir
-                log.append(f"重命名目录 {dir_path} -> {new_dir}")
+        # 判断是否为需要迁移的分桶目录（如 pokedex/6f/、counter/6f/）
+        bucket_move = (_is_hex2(dir_base) and dir_base.lower() == src_u[:2]
+                       and dir_base.lower() != dst_u[:2])
+        if bucket_move:
+            target_dir = os.path.join(os.path.dirname(dir_path), dst_u[:2])
+            os.makedirs(target_dir, exist_ok=True)
+            log.append(f"分桶目录迁移：{os.path.relpath(dir_path, base_dir)}"
+                       f" -> {os.path.relpath(target_dir, base_dir)}（逐文件移动）")
+        else:
+            target_dir = dir_path
 
         for p in paths:
             fname = os.path.basename(p)
-            cur_p = p if cur_dir == dir_path else os.path.join(cur_dir, fname)
 
             # 1) 替换文件内容中的 UUID
             ext = os.path.splitext(fname)[1].lower()
             if ext in (".dat", ".nbt"):
-                count = replace_uuid_in_nbt_file(cur_p, src, dst)
+                count = replace_uuid_in_nbt_file(p, src, dst)
             else:  # .snbt / .json 作为文本处理
-                count = replace_uuid_in_text_file(cur_p, src, dst)
+                count = replace_uuid_in_text_file(p, src, dst)
 
-            # 2) 重命名文件
+            # 2) 移动并重命名文件（跨目录 os.rename 即移动）
             new_fname = _replace_uuid_in_name(fname, src, dst)
-            new_p = os.path.join(cur_dir, new_fname)
+            new_p = os.path.join(target_dir, new_fname)
             if os.path.exists(new_p):
                 raise RuntimeError(f"重命名冲突：{new_p} 已存在，迁移中止")
-            os.rename(cur_p, new_p)
+            os.rename(p, new_p)
             log.append(f"{os.path.relpath(new_p, base_dir)}"
                        f"（内容替换 {count} 处）")
+
+        # 原分桶目录若已清空则移除；rmdir 只能删空目录，
+        # 同前缀其他玩家的文件仍在时会保留原目录，绝对安全
+        if bucket_move and not os.listdir(dir_path):
+            os.rmdir(dir_path)
+            log.append(f"已移除空的分桶目录 {os.path.relpath(dir_path, base_dir)}")
 
     return log
 
