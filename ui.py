@@ -15,6 +15,7 @@
 
 import base64
 import os
+import sys
 import threading
 import time
 import tkinter as tk
@@ -51,6 +52,18 @@ from save_manager import (
 )
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def app_base_dir() -> str:
+    """用户数据（备份等）的写入基准目录。
+
+    Nuitka onefile 运行时 __file__ 指向临时解压目录，程序退出即销毁，
+    备份等用户数据必须写到 exe 所在目录；源码运行时即项目根目录。
+    注意：res/ 资源读取仍应使用 PROJECT_ROOT（资源随包解压在临时目录）。
+    """
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return PROJECT_ROOT
 AVATAR_SIZE = 32      # 头像显示边长（像素）
 
 # UUID 获取方式与各方式的子选项
@@ -653,7 +666,7 @@ class App:
 
     def on_backup(self):
         try:
-            dest = self.om.backup_save(os.path.join(PROJECT_ROOT, "backups"))
+            dest = self.om.backup_save(os.path.join(app_base_dir(), "backups"))
         except Exception as e:
             messagebox.showerror("备份失败", str(e))
             return
