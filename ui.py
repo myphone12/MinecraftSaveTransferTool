@@ -113,8 +113,12 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("Minecraft 存档玩家数据迁移工具")
-        root.geometry("1320x880")
-        root.minsize(1150, 680)
+        # 窗口图标：使用基于模块位置的绝对路径（打包后 cwd 不确定）
+        icon_path = os.path.join(PROJECT_ROOT, "res", "icon.ico")
+        if os.path.isfile(icon_path):
+            root.iconbitmap(icon_path)
+        root.geometry("1230x880")
+        root.minsize(1230, 680)
 
         self.sm = SaveManager()
         self.om = OperationManager(self.sm)
@@ -204,7 +208,9 @@ class App:
         self.host_btn.pack(pady=10)
         ttk.Label(host_frame, foreground="#666", wraplength=320, justify="left",
                   text="说明：确认后仅记录为待操作（左侧列表以 ★ 标记），"
-                       "需在菜单中选择“保存全部修改到存档”才会写入 level.dat。"
+                       "需在菜单中选择“保存全部修改到存档”才会写入 level.dat。\n"
+                       "注意：将房主修改为谁，单人模式进入的就是谁的存档。同时会将房主存档覆盖到当前uuid！\n"
+                       "如果仅修改房主，不迁移uuid，可能会导致自己或他人的存档被异常覆盖，请谨慎操作！"
                   ).pack(anchor="w", padx=10, pady=(0, 8))
 
         # 右下：UUID 迁移/交换
