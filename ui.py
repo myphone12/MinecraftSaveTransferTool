@@ -15,11 +15,13 @@
 
 import base64
 import os
+import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import player_api
+import uuid_gen
 from nbt_ops import (
     UUID_RE,
     read_player_fields,
@@ -36,6 +38,7 @@ from operations import (
     SetWorldOp,
 )
 from player_dialog import PlayerEditDialog
+from uuid_gen import pcl2_legacy_uuid, pcl2_skin_uuid, pclce_standard_uuid
 from save_manager import (
     ALL_PARTS,
     PART_ADVANCEMENTS,
@@ -49,6 +52,14 @@ from save_manager import (
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 AVATAR_SIZE = 32      # 头像显示边长（像素）
+
+# UUID 获取方式与各方式的子选项
+UUID_MODES = ["在线API", "PCL2离线", "PCL2-CE/HMCL"]
+UUID_SUB_OPTIONS = {
+    "在线API": [],
+    "PCL2离线": ["标准", "Steve", "Alex"],
+    "PCL2-CE/HMCL": ["标准（HMCL/BakaXL/Bukkit）", "传统"],
+}
 
 # 史蒂夫头像 8x8 像素画配色（离线玩家兜底，程序内绘制、无需外部资源）
 STEVE_COLORS = {
@@ -234,10 +245,9 @@ class App:
                        "点击确认后将在下方日志区列出会修改的文件。"
                   ).pack(anchor="w", padx=10, pady=(0, 8))
 
-        # ---------- 最右列：存档基础参数 ----------
+        # ---------- 最右列：存档基础参数 + UUID 获取 ----------
         world_col = ttk.Frame(main)
         main.add(world_col, weight=2)
-        world_col.rowconfigure(0, weight=1)
         world_col.columnconfigure(0, weight=1)
 
         world_frame = ttk.LabelFrame(world_col, text="存档基础参数")
@@ -287,6 +297,56 @@ class App:
                   text="说明：确认后仅记录与当前存档不同处的待操作，"
                        "需在菜单中选择“保存全部修改到存档”才会写入 level.dat。"
                   ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        # ---------- 最右列下方：UUID 获取 ----------
+        uuid_frame = ttk.LabelFrame(world_col, text="UUID 获取")
+        uuid_frame.grid(row=1, column=0, sticky="new", padx=(6, 0), pady=(6, 0))
+
+        uuid_form = ttk.Frame(uuid_frame)
+        uuid_form.pack(fill=tk.X, padx=10, pady=(10, 4))
+
+        ttk.Label(uuid_form, text="玩家名：").grid(row=0, column=0, sticky="w",
+                                                   pady=3)
+        self.uuid_name_var = tk.StringVar()
+        self.uuid_name_entry = ttk.Entry(uuid_form,
+                                         textvariable=self.uuid_name_var)
+        self.uuid_name_entry.grid(row=0, column=1, sticky="ew", pady=3,
+                                  padx=(4, 0))
+
+        ttk.Label(uuid_form, text="方式：").grid(row=1, column=0, sticky="w",
+                                                 pady=3)
+        self.uuid_mode_combo = ttk.Combobox(
+            uuid_form, values=UUID_MODES, state="readonly", width=14)
+        self.uuid_mode_combo.current(0)
+        self.uuid_mode_combo.grid(row=1, column=1, sticky="w", pady=3,
+                                  padx=(4, 0))
+        self.uuid_mode_combo.bind("<<ComboboxSelected>>",
+                                  lambda e: self._refresh_uuid_sub_options())
+
+        ttk.Label(uuid_form, text="选项：").grid(row=2, column=0, sticky="w",
+                                                 pady=3)
+        self.uuid_sub_combo = ttk.Combobox(uuid_form, state="readonly",
+                                           width=14)
+        self.uuid_sub_combo.grid(row=2, column=1, sticky="w", pady=3,
+                                 padx=(4, 0))
+        self._refresh_uuid_sub_options()
+
+        uuid_form.columnconfigure(1, weight=1)
+
+        btns = ttk.Frame(uuid_frame)
+        btns.pack(pady=6)
+        self.uuid_btn = ttk.Button(btns, text="获取", command=self.on_get_uuid)
+        self.uuid_btn.pack(side=tk.LEFT, padx=4)
+        self.uuid_copy_btn = ttk.Button(btns, text="复制",
+                                        command=self.on_copy_uuid,
+                                        state="disabled")
+        self.uuid_copy_btn.pack(side=tk.LEFT, padx=4)
+
+        # 结果显示（只读）
+        self.uuid_result_var = tk.StringVar()
+        uuid_result = ttk.Entry(uuid_frame, textvariable=self.uuid_result_var,
+                                state="readonly", font=("Consolas", 9))
+        uuid_result.pack(fill=tk.X, padx=10, pady=(0, 8))
 
         # ---------- 底部状态栏（先于主分栏打包，确保空间不被挤占） ----------
         status = ttk.Frame(self.root)
@@ -789,6 +849,83 @@ class App:
 
         PlayerEditDialog(self.root, row.uuid, row.display_name(), fields,
                          on_confirm)
+
+    # ------------------------------------------------------------------
+    # UUID 获取
+    # ------------------------------------------------------------------
+    def _refresh_uuid_sub_options(self):
+        """根据所选方式刷新子选项下拉（在线 API 无子选项）。"""
+        mode = self.uuid_mode_combo.get()
+        subs = UUID_SUB_OPTIONS.get(mode, [])
+        if subs:
+            self.uuid_sub_combo["values"] = subs
+            self.uuid_sub_combo.current(0)
+            self.uuid_sub_combo.configure(state="readonly")
+        else:
+            self.uuid_sub_combo["values"] = []
+            self.uuid_sub_combo.set("")
+            self.uuid_sub_combo.configure(state="disabled")
+
+    def on_get_uuid(self):
+        """按所选方式获取玩家名对应的 UUID。"""
+        name = self.uuid_name_var.get().strip()
+        if not name:
+            messagebox.showwarning("未输入玩家名", "请先输入玩家名。")
+            return
+        mode = self.uuid_mode_combo.get()
+
+        if mode == "在线API":
+            # 在线查询走后台线程，避免阻塞界面
+            self.uuid_btn.configure(state="disabled")
+            self._set_status(f"正在在线查询 {name} 的 UUID…")
+            threading.Thread(target=self._fetch_uuid_online, args=(name,),
+                             daemon=True).start()
+            return
+
+        sub = self.uuid_sub_combo.get()
+        if mode == "PCL2离线":
+            skin = {"标准": "standard", "Steve": "steve",
+                    "Alex": "alex"}[sub]
+            raw = uuid_gen.pcl2_skin_uuid(name, skin)
+        else:  # PCL2-CE/HMCL
+            raw = (uuid_gen.pclce_standard_uuid(name)
+                   if sub.startswith("标准")
+                   else uuid_gen.pcl2_legacy_uuid(name))
+        self._show_uuid_result(name, f"{mode} / {sub}", raw)
+
+    def _fetch_uuid_online(self, name: str):
+        """后台线程：在线查询 UUID，完成后调度回主线程显示。"""
+        raw = player_api.fetch_uuid_by_name(name)
+        self.root.after(0, lambda: self._on_uuid_online_done(name, raw))
+
+    def _on_uuid_online_done(self, name: str, raw):
+        self.uuid_btn.configure(state="normal")
+        if raw is None:
+            self.uuid_result_var.set("")
+            self.uuid_copy_btn.configure(state="disabled")
+            self.log(f"在线查询 {name}：未找到正版账号（或网络失败）", "warn")
+            self._set_status("在线查询失败")
+            return
+        self._show_uuid_result(name, "在线API", raw)
+
+    def _show_uuid_result(self, name: str, mode_desc: str, raw: str):
+        """显示获取结果（带横杠小写标准格式）并写入日志。"""
+        dashed = uuid_dashed(raw)
+        self.uuid_result_var.set(dashed)
+        self.uuid_copy_btn.configure(state="normal")
+        self.log(f"UUID 获取（{mode_desc}）：{name} → {dashed}", "title")
+        self.log(f"  无横杠形式：{raw.lower()}")
+        self._set_status(f"已获取 {name} 的 UUID")
+
+    def on_copy_uuid(self):
+        """复制结果 UUID 到剪贴板。"""
+        value = self.uuid_result_var.get()
+        if not value:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(value)
+        self.log(f"已复制到剪贴板：{value}")
+        self._set_status("UUID 已复制到剪贴板")
 
     def _log_file_preview(self, header, files, swap: bool):
         """在日志区按分类列出文件预览。"""
