@@ -316,7 +316,7 @@ class App:
         ttk.Label(uuid_form, text="方式：").grid(row=1, column=0, sticky="w",
                                                  pady=3)
         self.uuid_mode_combo = ttk.Combobox(
-            uuid_form, values=UUID_MODES, state="readonly", width=14)
+            uuid_form, values=UUID_MODES, state="readonly", width=24)
         self.uuid_mode_combo.current(0)
         self.uuid_mode_combo.grid(row=1, column=1, sticky="w", pady=3,
                                   padx=(4, 0))
@@ -326,7 +326,7 @@ class App:
         ttk.Label(uuid_form, text="选项：").grid(row=2, column=0, sticky="w",
                                                  pady=3)
         self.uuid_sub_combo = ttk.Combobox(uuid_form, state="readonly",
-                                           width=14)
+                                           width=24)
         self.uuid_sub_combo.grid(row=2, column=1, sticky="w", pady=3,
                                  padx=(4, 0))
         self._refresh_uuid_sub_options()
@@ -846,6 +846,12 @@ class App:
             messagebox.showerror("读取失败",
                                  f"无法读取玩家数据 {row.uuid}：\n{e}")
             return
+
+        # 叠加待操作队列中已确认但未保存的玩家参数修改，
+        # 使弹窗显示的是"保存后将生效"的值（与左侧列表叠加逻辑一致）
+        for op in self.om.active_ops():
+            if isinstance(op, EditPlayerOp) and op.uuid == row.uuid:
+                fields.update(op.changes)
 
         def on_confirm(uuid, changes):
             op = EditPlayerOp(uuid, changes)
