@@ -1,5 +1,8 @@
 __all__ = ["nbt", "world", "region", "chunk"]
-from . import *
+# 显式导入子模块（原为 `from . import *`）。
+# Nuitka 编译后对部分初始化包的星号导入不做子模块导入回退，
+# 会抛 AttributeError: partially initialized module 'nbt'，故改为显式形式。
+from . import nbt, world, region, chunk
 
 # Documentation only automatically includes functions specified in __all__.
 # If you add more functions, please manually include them in doc/index.rst.

@@ -9,3 +9,10 @@ backups/
 
 # NBTExplorer 二进制工具（不再作为运行时依赖）
 NBTExplorer/
+
+# Nuitka 构建产物
+main.build/
+main.dist/
+main.exe
+main.bin
+*.spec
