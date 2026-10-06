@@ -57,12 +57,18 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 def app_base_dir() -> str:
     """用户数据（备份等）的写入基准目录。
 
-    Nuitka onefile 运行时 __file__ 指向临时解压目录，程序退出即销毁，
-    备份等用户数据必须写到 exe 所在目录；源码运行时即项目根目录。
+    Nuitka onefile 运行时 __file__ 与 sys.executable 都指向临时解压目录
+    （退出即销毁），备份等用户数据必须写到原始 exe 所在目录：
+    优先用 onefile 引导进程设置的环境变量 NUITKA_ONEFILE_DIRECTORY，
+    其次用 argv[0]（实测 onefile 下为原始 exe 路径）；
+    源码运行时即项目根目录。
     注意：res/ 资源读取仍应使用 PROJECT_ROOT（资源随包解压在临时目录）。
     """
+    env_dir = os.environ.get("NUITKA_ONEFILE_DIRECTORY")
+    if env_dir:
+        return env_dir
     if getattr(sys, "frozen", False) or "__compiled__" in globals():
-        return os.path.dirname(os.path.abspath(sys.executable))
+        return os.path.dirname(os.path.abspath(sys.argv[0]))
     return PROJECT_ROOT
 AVATAR_SIZE = 32      # 头像显示边长（像素）
 
@@ -118,6 +124,75 @@ def make_steve_image() -> tk.PhotoImage:
             img.put(STEVE_COLORS[ch], (x, y, x + 1, y + 1))
     scale = AVATAR_SIZE // 8
     return img.zoom(scale, scale)
+
+
+class ProgressDialog(tk.Toplevel):
+    """备份/另存为时的进度弹窗：进度条 + 百分比 + 剩余时间。"""
+
+    def __init__(self, master, title: str, message: str = "正在复制…"):
+        super().__init__(master)
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        self._start = time.time()
+        self._last_ui = 0.0      # 上次刷新界面的时间戳（节流用）
+
+        body = ttk.Frame(self, padding=16)
+        body.pack(fill=tk.BOTH, expand=True)
+        self.msg_var = tk.StringVar(value=message)
+        ttk.Label(body, textvariable=self.msg_var).pack(anchor="w")
+        self.bar = ttk.Progressbar(body, orient="horizontal", length=320,
+                                   mode="determinate", maximum=100)
+        self.bar.pack(pady=(10, 4))
+        row = ttk.Frame(body)
+        row.pack(fill=tk.X)
+        self.pct_var = tk.StringVar(value="0%")
+        ttk.Label(row, textvariable=self.pct_var).pack(side=tk.LEFT)
+        self.eta_var = tk.StringVar(value="剩余时间：计算中…")
+        ttk.Label(row, textvariable=self.eta_var).pack(side=tk.RIGHT)
+
+        # 居中于主窗口
+        self.update_idletasks()
+        x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
+        y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+    def set_message(self, text: str):
+        self.msg_var.set(text)
+        self.update_idletasks()
+
+    def update_progress(self, done: int, total: int):
+        """进度回调：按时间节流刷新，避免海量小文件拖慢复制。"""
+        now = time.time()
+        finished = total > 0 and done >= total
+        if not finished and now - self._last_ui < 0.05:
+            return
+        self._last_ui = now
+
+        pct = done / total * 100 if total else 100.0
+        self.bar["value"] = pct
+        self.pct_var.set(f"{pct:.1f}%")
+
+        elapsed = now - self._start
+        if finished:
+            self.eta_var.set(f"完成，用时 {self._fmt_seconds(elapsed)}")
+        elif done > 0 and elapsed > 0.3:
+            eta = elapsed / done * (total - done)
+            self.eta_var.set(f"剩余时间：约 {self._fmt_seconds(eta)}")
+        self.update_idletasks()
+
+    @staticmethod
+    def _fmt_seconds(sec: float) -> str:
+        sec = int(max(0, sec))
+        if sec < 60:
+            return f"{sec} 秒"
+        return f"{sec // 60} 分 {sec % 60} 秒"
+
+    def close(self):
+        self.grab_release()
+        self.destroy()
 
 
 class App:
@@ -665,11 +740,15 @@ class App:
         self.log_lines(log)
 
     def on_backup(self):
+        dlg = ProgressDialog(self.root, "备份存档", "正在备份存档…")
         try:
-            dest = self.om.backup_save(os.path.join(app_base_dir(), "backups"))
+            dest = self.om.backup_save(os.path.join(app_base_dir(), "backups"),
+                                       progress_cb=dlg.update_progress)
         except Exception as e:
+            dlg.close()
             messagebox.showerror("备份失败", str(e))
             return
+        dlg.close()
         self._set_status(f"已备份存档到：{dest}")
         self.log(f"备份存档完成：{dest}")
         messagebox.showinfo("备份完成", f"存档已完整复制到：\n{dest}")
@@ -682,11 +761,15 @@ class App:
         path = filedialog.askdirectory(title="选择另存为的目标目录（将为空目录）")
         if not path:
             return
+        dlg = ProgressDialog(self.root, "另存为修改存档", "正在复制存档…")
         try:
-            log = self.om.save_as(path)
+            log = self.om.save_as(path, progress_cb=dlg.update_progress,
+                                  phase_cb=dlg.set_message)
         except Exception as e:
+            dlg.close()
             messagebox.showerror("另存为失败", str(e))
             return
+        dlg.close()
         self._set_status(f"已另存为：{path}")
         self.log(f"另存为修改存档：完成（原存档未修改），副本位于 {path}", "title")
         self.log_lines(log)

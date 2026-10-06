@@ -399,21 +399,51 @@ class OperationManager:
         return log
 
     # ---------------- 备份 / 另存为 ----------------
-    def backup_save(self, backups_root: str):
+    @staticmethod
+    def _copytree_with_progress(src: str, dst: str, progress_cb=None) -> None:
+        """带进度回调的目录复制（按字节数汇报，便于计算百分比与剩余时间）。"""
+        # 预扫描：收集全部文件与总字节数
+        entries = []
+        total = 0
+        for root, _dirs, files in os.walk(src):
+            for fname in files:
+                p = os.path.join(root, fname)
+                try:
+                    size = os.path.getsize(p)
+                except OSError:
+                    size = 0
+                entries.append((p, os.path.join(dst, os.path.relpath(p, src)), size))
+                total += size
+        os.makedirs(dst, exist_ok=True)
+        copied = 0
+        for sp, dp, size in entries:
+            os.makedirs(os.path.dirname(dp), exist_ok=True)
+            shutil.copy2(sp, dp)
+            copied += size
+            if progress_cb:
+                progress_cb(copied, total)
+
+    def backup_save(self, backups_root: str, progress_cb=None):
         """把当前存档完整复制到 backups_root 下带时间戳的目录，返回路径。"""
         name = os.path.basename(self.sm.save_dir)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         dest = os.path.join(backups_root, f"{name}_{stamp}")
-        shutil.copytree(self.sm.save_dir, dest)
+        self._copytree_with_progress(self.sm.save_dir, dest, progress_cb)
         return dest
 
-    def save_as(self, dest_dir: str):
-        """把存档完整复制到 dest_dir，并在副本上执行全部待操作，返回日志。"""
+    def save_as(self, dest_dir: str, progress_cb=None, phase_cb=None):
+        """把存档完整复制到 dest_dir，并在副本上执行全部待操作，返回日志。
+
+        progress_cb(copied, total) 汇报复制进度；
+        phase_cb(text) 用于切换阶段提示（复制完成 → 应用修改）。
+        """
         if os.path.exists(dest_dir):
             if os.listdir(dest_dir):
                 raise RuntimeError("目标目录非空，请换一个目录")
         else:
             os.makedirs(dest_dir)
         target = os.path.join(dest_dir, os.path.basename(self.sm.save_dir))
-        shutil.copytree(self.sm.save_dir, target)
+        self._copytree_with_progress(self.sm.save_dir, target, progress_cb)
+        if phase_cb:
+            phase_cb("正在应用待操作…")
         return self.execute_on(target)
