@@ -299,6 +299,48 @@ class OperationManager:
         elif src_row:
             src_row.uuid = op.dst
 
+    # ---------------- 显示 uuid 与文件 uuid 的映射 ----------------
+    def _display_map(self, upto: int = None):
+        """构建 文件uuid → 显示uuid 的正向映射。
+
+        以基础玩家列表（文件中的真实 uuid）为起点，按顺序应用
+        ops[:upto]（默认全部生效操作）中的迁移，与 _apply_migrate_display
+        的交换/改名语义保持一致。
+        """
+        ops = self.ops[:self.cursor] if upto is None else self.ops[:upto]
+        m = {e.uuid: e.uuid for e in self.sm.players}
+        for op in ops:
+            if isinstance(op, MigrateUuidOp):
+                srcs = [k for k, v in m.items() if v == op.src]
+                dsts = [k for k, v in m.items() if v == op.dst]
+                if srcs and dsts:
+                    m[srcs[0]], m[dsts[0]] = m[dsts[0]], m[srcs[0]]
+                elif srcs:
+                    m[srcs[0]] = op.dst
+        return m
+
+    def file_uuid_for_display(self, display_uuid: str) -> str:
+        """显示 uuid → 文件中当前的真实 uuid。
+
+        待保存的迁移只改显示不改文件，读取玩家数据等文件操作
+        必须用本方法换算回文件 uuid。找不到映射时原样返回。
+        """
+        for file_uuid, disp in self._display_map().items():
+            if disp == display_uuid:
+                return file_uuid
+        return display_uuid
+
+    def file_uuid_for_op(self, op_index: int, recorded_display_uuid: str) -> str:
+        """某待操作确认时记录的显示 uuid → 文件 uuid。
+
+        按该操作入队时的队列前缀（ops[:op_index]）做映射，
+        用于把历史操作与当前显示行在文件空间中对齐。
+        """
+        for file_uuid, disp in self._display_map(op_index).items():
+            if disp == recorded_display_uuid:
+                return file_uuid
+        return recorded_display_uuid
+
     # ---------------- 执行引擎 ----------------
     def execute_on(self, target_dir: str):
         """按顺序把生效中的操作应用到 target_dir，返回完整日志。"""

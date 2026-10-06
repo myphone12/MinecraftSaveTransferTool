@@ -846,27 +846,33 @@ class App:
     # ------------------------------------------------------------------
     def on_edit_player(self, row):
         """打开玩家参数编辑弹窗，确认后记录 EditPlayerOp。"""
+        # 待保存的迁移只改显示不改文件：读取要换算回文件中的真实 uuid
+        file_uuid = self.om.file_uuid_for_display(row.uuid)
         try:
-            fields = read_player_fields(self.sm.save_dir, row.uuid)
+            fields = read_player_fields(self.sm.save_dir, file_uuid)
         except Exception as e:
             messagebox.showerror("读取失败",
                                  f"无法读取玩家数据 {row.uuid}：\n{e}")
             return
 
         # 叠加待操作队列中已确认但未保存的玩家参数修改，
-        # 使弹窗显示的是"保存后将生效"的值（与左侧列表叠加逻辑一致）
-        for op in self.om.active_ops():
-            if isinstance(op, EditPlayerOp) and op.uuid == row.uuid:
+        # 使弹窗显示的是"保存后将生效"的值（历史操作记录的显示 uuid
+        # 需按其入队时的映射换算到文件空间再比对）
+        for i, op in enumerate(self.om.active_ops()):
+            if isinstance(op, EditPlayerOp) and \
+                    self.om.file_uuid_for_op(i, op.uuid) == file_uuid:
                 fields.update(op.changes)
 
         def on_confirm(uuid, changes):
             op = EditPlayerOp(uuid, changes)
             self.log(f"确认修改玩家参数：{row.display_name()} ({uuid})", "title")
             self.log(f"  {op.describe()}")
-            # 仅旧版存档的房主需要 level.dat 双写（新版房主数据就在 players/data）
-            is_host_now = (self.sm.layout == "old"
-                           and (self.om.display_host_uuid()
-                                or self.sm.host_uuid) == uuid)
+            # 仅旧版存档的房主需要 level.dat 双写（新版房主数据就在 players/data）。
+            # 待保存的房主操作在显示空间比较，检测到的房主在文件空间比较
+            pending_host = self.om.display_host_uuid()
+            is_host_now = self.sm.layout == "old" and (
+                pending_host == uuid if pending_host
+                else self.sm.host_uuid == file_uuid)
             target = "玩家数据文件" + ("与 level.dat（该玩家是房主）"
                                        if is_host_now else "")
             self.log(f"  将修改：{target}；已加入待操作列表，保存后生效")
