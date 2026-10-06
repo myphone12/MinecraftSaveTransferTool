@@ -166,8 +166,11 @@ class PlayerEditDialog(tk.Toplevel):
         if mode != int(self.fields.get("playerGameType", 0)):
             changes["playerGameType"] = mode
 
-        health = self.health_bar.value / 2.0     # 半点 → 生命值
-        if abs(health - float(self.fields.get("Health", 20.0))) > 1e-6:
+        # 状态条值与 Health 同尺度（0~20，每半格 1 点），直接使用。
+        # 状态条粒度为 1 点：文件值四舍五入后与条值相同视为未修改
+        # （避免 Health=13.999999 这类浮点尾数产生无意义的写入）
+        health = float(self.health_bar.value)
+        if abs(health - float(self.fields.get("Health", 20.0))) >= 0.5:
             changes["Health"] = health
 
         food = self.hunger_bar.value
