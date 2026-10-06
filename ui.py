@@ -117,7 +117,7 @@ class App:
         icon_path = os.path.join(PROJECT_ROOT, "res", "icon.ico")
         if os.path.isfile(icon_path):
             root.iconbitmap(icon_path)
-        root.geometry("1230x880")
+        root.geometry("1230x920")
         root.minsize(1230, 680)
 
         self.sm = SaveManager()
