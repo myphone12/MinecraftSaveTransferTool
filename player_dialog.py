@@ -128,7 +128,7 @@ class PlayerEditDialog(tk.Toplevel):
         ttk.Label(body, text="饥饿值：").grid(row=2, column=0, sticky="nw",
                                               pady=6)
         self.hunger_bar = IconStatusBar(body, "hunger",
-                                        int(fields.get("foodLevel", 20)))
+                                        int(round(fields.get("foodLevel", 20.0))))
         self.hunger_bar.grid(row=2, column=1, sticky="w", pady=6)
 
         # ---- 饱和度 ----
@@ -173,8 +173,9 @@ class PlayerEditDialog(tk.Toplevel):
         if abs(health - float(self.fields.get("Health", 20.0))) >= 0.5:
             changes["Health"] = health
 
-        food = self.hunger_bar.value
-        if food != int(self.fields.get("foodLevel", 20)):
+        # 饥饿值与生命值一致：浮点表达、状态条粒度阈值判定未修改
+        food = float(self.hunger_bar.value)
+        if abs(food - float(self.fields.get("foodLevel", 20.0))) >= 0.5:
             changes["foodLevel"] = food
 
         try:

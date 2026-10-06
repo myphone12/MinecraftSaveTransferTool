@@ -469,12 +469,18 @@ def xp_total_for_level(level: int) -> int:
 
 
 def _set_player_field(compound, key: str, value) -> None:
-    """设置复合标签中的字段值；标签缺失时按期望类型重建。"""
+    """设置复合标签中的字段值；标签缺失时按期望类型重建。
+
+    按 PLAYER_FIELD_TYPES 声明的类型强制转换（int 字段收到 18.0 这类
+    浮点值时转回 int），保证 TAG_Int 的 struct 打包不出错。
+    """
     from nbt.nbt import TAG_Float, TAG_Int
+    is_int = PLAYER_FIELD_TYPES[key] == "int"
+    value = int(round(value)) if is_int else float(value)
     if key in compound.keys():
         compound[key].value = value
     else:
-        tag_cls = TAG_Int if PLAYER_FIELD_TYPES[key] == "int" else TAG_Float
+        tag_cls = TAG_Int if is_int else TAG_Float
         compound[key] = tag_cls(name=key, value=value)
 
 
