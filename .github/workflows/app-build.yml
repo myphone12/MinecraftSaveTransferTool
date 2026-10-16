@@ -44,7 +44,6 @@ jobs:
           macos-app-name: Minecraft Save Transfer Tool
           macos-app-console-mode: attach
           linux-app-icon: ./res/icon.png
-          linux-app-name: Minecraft Save Transfer Tool
           linux-app-console-mode: attach
           
 
