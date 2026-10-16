@@ -1,18 +1,14 @@
-# Python 缓存
+# Python chahe
 __pycache__/
 *.pyc
 
-# 测试存档与临时目录不入库（体积大、含二进制）
-测试存档/
-测试存档22/
-新版存档/
-scratch/
-backups/
+#python virtual environment
+.venv/
 
-# NBTExplorer 二进制工具（不再作为运行时依赖）
-NBTExplorer/
+# test files
+tests/
 
-# Nuitka 构建产物
+# Nuitka build files
 main.build/
 main.dist/
 main.exe

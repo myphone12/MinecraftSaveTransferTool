@@ -1,48 +1,20 @@
 # -*- coding: utf-8 -*-
 """nbt_ops.py — NBT 文件读写与 UUID 操作封装。
 
-基于本地 nbt 库（NBT-version-1.5.1）实现对 .dat / .nbt 文件的读取、
+基于 nbt 库（NBT-version-1.5.1）实现对 .dat / .nbt 文件的读取、
 修改与保存，提供三类核心能力：
   1. UUID 形式转换（带横杠 / 无横杠 / Java UUID int 数组）
   2. 深度遍历 NBT 树，替换其中出现的目标 UUID（字符串与整型数组形式）
   3. 将目标玩家 playerdata 完整克隆为 level.dat 的 Data/Player（修改房主）
 """
 
-import importlib.util
-import io
-import os
-import re
+import io, os, re
+from nbt import NBTFile
+from nbt.nbt import TAG_Byte, TAG_Byte_Array, TAG_Compound, TAG_Float, TAG_Int, TAG_Int_Array, TAG_List, TAG_Long_Array, TAG_String
+
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-_NBT_SOURCE = os.path.join(PROJECT_ROOT, "NBT-version-1.5.1", "nbt", "nbt.py")
 
-
-def _load_nbt_module():
-    """从源码文件直接加载 vendored nbt 库的核心模块 nbt.py。
-
-    不经过 nbt 包的 __init__.py：其 `from . import *` 写法在 Nuitka
-    编译后会因部分初始化包的属性访问失败而崩溃；且绕过包导入可避免
-    site-packages 中 pip 安装的同名旧版 nbt 包造成干扰。
-    nbt.py 仅依赖标准库（struct/gzip），可独立加载。
-    注意：打包时需把该源码文件作为数据文件带上，见 README 编译命令。
-    """
-    spec = importlib.util.spec_from_file_location("_vendored_nbt", _NBT_SOURCE)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_nbt = _load_nbt_module()
-NBTFile = _nbt.NBTFile
-TAG_Byte = _nbt.TAG_Byte
-TAG_Byte_Array = _nbt.TAG_Byte_Array
-TAG_Compound = _nbt.TAG_Compound
-TAG_Float = _nbt.TAG_Float
-TAG_Int = _nbt.TAG_Int
-TAG_Int_Array = _nbt.TAG_Int_Array
-TAG_List = _nbt.TAG_List
-TAG_Long_Array = _nbt.TAG_Long_Array
-TAG_String = _nbt.TAG_String
 
 # UUID 正则：匹配标准的 8-4-4-4-12 十六进制格式
 UUID_RE = re.compile(

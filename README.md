@@ -16,7 +16,7 @@
 ## 存档格式支持
 
 | 格式 | 玩家数据 | 房主标记 |
-|---|---|---|
+| --- | --- | --- |
 | 旧版 | `playerdata/<uuid>.dat` | `level.dat → Data/Player` |
 | 新版 | `players/data/<uuid>.dat`（进度/统计在 `players/advancements`、`players/stats`） | `level.dat → Data/singleplayer_uuid` |
 
@@ -36,22 +36,16 @@ python main.py
 
 ## 打包 exe（Nuitka）
 
-```
+```bat
 python -m nuitka --standalone --onefile ^
   --windows-icon-from-ico="./res/icon.ico" --enable-plugin=tk-inter ^
   --include-data-dir=res=res ^
-  --include-data-files=NBT-version-1.5.1/nbt/nbt.py=NBT-version-1.5.1/nbt/nbt.py ^
   --assume-yes-for-downloads --windows-console-mode=attach main.py
 ```
 
-要点：
-- `--include-data-dir=res=res` 必须（图标资源）
-- `--include-data-files=...nbt.py=...` 必须：程序在运行时直接加载该源码文件（绕过 nbt 包 `__init__.py` 的星号导入，其在 Nuitka 编译后会导致循环导入崩溃，且不受 pip 安装的同名包干扰），因此无需设置 PYTHONPATH，PowerShell/cmd/bash 下命令一致
-- 注意用 `--include-data-files` 而不是 `--include-data-dir` 打包 nbt.py：目录因含 `__init__.py` 会被 Nuitka 跳过
-
 ## 项目结构
 
-```
+```text
 main.py            程序入口
 ui.py              主窗口（菜单、玩家列表、功能面板、日志区）
 player_dialog.py   玩家参数编辑弹窗与可点击状态条
