@@ -36,6 +36,17 @@ jobs:
           script-name: main.py
           mode: standalone
           enable-plugins: tk-inter
+          include-data-dir: |
+            res=res
+          windows-icon-from-ico: ./res/icon.ico
+          windows-console-mode: attach
+          macos-app-icon: ./res/AppIcon.icns
+          macos-app-name: Minecraft Save Transfer Tool
+          macos-app-console-mode: attach
+          linux-app-icon: ./res/icon.png
+          linux-app-name: Minecraft Save Transfer Tool
+          linux-app-console-mode: attach
+          
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
