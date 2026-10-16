@@ -42,9 +42,9 @@ jobs:
           windows-console-mode: attach
           macos-app-icon: ./res/AppIcon.icns
           macos-app-name: Minecraft Save Transfer Tool
-          macos-app-console-mode: attach
+          macos-app-console-mode: disable
           linux-app-icon: ./res/icon.png
-          linux-app-console-mode: attach
+          linux-app-console-mode: disable
           
 
       - name: Upload Artifacts
