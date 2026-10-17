@@ -202,9 +202,10 @@ class App:
         self.root = root
         root.title("Minecraft 存档玩家数据迁移工具")
         # 窗口图标：使用基于模块位置的绝对路径（打包后 cwd 不确定）
-        icon_path = os.path.join(PROJECT_ROOT, "res", "icon.ico")
+        icon_path = os.path.join(PROJECT_ROOT, "res", "icon.png")
         if os.path.isfile(icon_path):
-            root.iconbitmap(icon_path)
+            icon_img = tk.PhotoImage(file=icon_path)
+            root.iconphoto(True, icon_img)
         root.geometry("1230x920")
         root.minsize(1230, 680)
 
