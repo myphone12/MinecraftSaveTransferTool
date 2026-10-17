@@ -34,10 +34,11 @@ jobs:
         with:
           nuitka-version: main
           script-name: main.py
-          mode: standalone
+          mode: app
           enable-plugins: tk-inter
           include-data-dir: |
             res=res
+          include-package: nbt
           windows-icon-from-ico: ./res/icon.ico
           windows-console-mode: attach
           macos-app-icon: ./res/AppIcon.icns

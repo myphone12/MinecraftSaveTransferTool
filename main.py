@@ -1,4 +1,10 @@
 # -*- coding: utf-8 -*-
+# Compilation mode, support OS-specific options
+# nuitka-project-if: {OS} in ("Windows", "Linux", "Darwin", "FreeBSD"):
+#    nuitka-project: --mode=app
+# nuitka-project-else:
+#    nuitka-project: --mode=standalone
+
 """main.py — 程序入口：启动 tkinter 主窗口。"""
 
 import ctypes

@@ -9,7 +9,7 @@
 """
 
 import io, os, re
-from nbt import NBTFile
+from nbt.nbt import NBTFile
 from nbt.nbt import TAG_Byte, TAG_Byte_Array, TAG_Compound, TAG_Float, TAG_Int, TAG_Int_Array, TAG_List, TAG_Long_Array, TAG_String
 
 
